@@ -1,0 +1,17 @@
+.git
+.gitignore
+.dockerignore
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+backend/.env
+backend/__pycache__
+backend/tracker.db
+backend/venv
+frontend/node_modules
+frontend/dist
+.DS_Store
+*.log

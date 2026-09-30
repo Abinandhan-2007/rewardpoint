@@ -9,13 +9,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
 from database import engine, init_db, get_db, SessionLocal
-from config import CAPTAIN_PASSWORD, PORT, HOST
+from config import CAPTAIN_PASSWORD, PORT, HOST, STATIC_DIR
 from auth import create_access_token, get_current_captain
 from fetcher import gradio_fetcher, process_member_snapshot
 from scheduler import scheduler
@@ -46,6 +47,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ----------------- Health Check Routes -----------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok"}
+
+# ----------------- Static Asset Mounting -----------------
+if STATIC_DIR and (STATIC_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
 # ----------------- Pydantic Schemas -----------------
 class LoginRequest(BaseModel):
@@ -535,3 +549,48 @@ async def events_endpoint():
             "X-Accel-Buffering": "no"
         }
     )
+
+
+# ----------------- Frontend SPA Catch-All -----------------
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    """
+    Serve static files or fall back to React SPA index.html for client-side routing.
+    Never intercept /api routes.
+    """
+    if full_path.startswith("api"):
+        raise HTTPException(status_code=404, detail="API route not found")
+
+    if STATIC_DIR and STATIC_DIR.exists():
+        # Check if requested path matches an existing static file (e.g. favicon.svg, vite.svg)
+        candidate = (STATIC_DIR / full_path).resolve()
+        try:
+            candidate.relative_to(STATIC_DIR.resolve())
+            if full_path and candidate.is_file():
+                return FileResponse(candidate)
+        except ValueError:
+            pass
+
+        # Fallback to index.html for SPA routes
+        index_file = STATIC_DIR / "index.html"
+        if index_file.is_file():
+            return FileResponse(index_file)
+
+    return Response(
+        content="""<!DOCTYPE html>
+<html>
+<head><title>Team Reward Tracker</title></head>
+<body style="font-family: sans-serif; text-align: center; padding: 50px;">
+  <h1>Team Reward Tracker</h1>
+  <p>Backend is running. Frontend static build was not found.</p>
+  <p>Run <code>npm run build</code> in the <code>frontend/</code> directory.</p>
+</body>
+</html>""",
+        media_type="text/html"
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
+

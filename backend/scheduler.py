@@ -15,25 +15,35 @@ class BackgroundScheduler:
     async def _run_loop(self):
         logger.info(f"Background scheduler started (interval: {POLL_INTERVAL_MINUTES} mins / {self.interval_seconds}s)")
         
-        # Initial wait before starting first auto-poll to allow app startup
-        await asyncio.sleep(2)
+        # Brief 0.5s pause to let FastAPI bind port and start listening
+        await asyncio.sleep(0.5)
         
-        while self._is_running:
-            try:
-                logger.info("Executing scheduled sync...")
-                await sync_all_members()
-            except Exception as e:
-                logger.error(f"Error in scheduler execution loop: {e}", exc_info=True)
+        # Immediately run full fetch for every member on startup
+        try:
+            logger.info("Startup sync: Immediately fetching full data for all members...")
+            await sync_all_members()
+            logger.info("Startup sync completed.")
+        except Exception as e:
+            logger.error(f"Error in startup sync: {e}", exc_info=True)
 
+        while self._is_running:
             # Wait for next interval or until manual trigger event is set
             try:
-                # Wait for interval OR manual refresh event
                 await asyncio.wait_for(self._trigger_event.wait(), timeout=self.interval_seconds)
                 self._trigger_event.clear()
                 logger.info("Manual refresh triggered!")
             except asyncio.TimeoutError:
                 # Interval elapsed normally
                 pass
+
+            if not self._is_running:
+                break
+
+            try:
+                logger.info("Executing scheduled sync...")
+                await sync_all_members()
+            except Exception as e:
+                logger.error(f"Error in scheduler execution loop: {e}", exc_info=True)
 
     def start(self):
         if not self._is_running:

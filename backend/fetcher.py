@@ -234,10 +234,13 @@ async def process_member_snapshot(
         fetch_status = "partial"
         error_msg = subjects_data.get("error_message")
 
-    # Update member name if fetched from sheet and not previously updated
-    if student_data.get("student_name") and student_data["student_name"] != "Unknown":
-        if member.name == member.roll_no or not member.name:
-            member.name = student_data["student_name"]
+    # Update member name if fetched from Gradio
+    fetched_name = (student_data.get("student_name") or "").strip()
+    if fetched_name and fetched_name != "Unknown":
+        member_name_clean = (member.name or "").strip().upper()
+        roll_clean = (member.roll_no or "").strip().upper()
+        if member_name_clean == roll_clean or not member.name:
+            member.name = fetched_name
             member.updated_at = now
 
     new_snapshot = models.Snapshot(
@@ -317,13 +320,25 @@ async def process_member_snapshot(
     return new_snapshot
 
 
+_sync_lock = asyncio.Lock()
+
 async def sync_all_members():
     """
     Fetch all active members sequentially with 0.5s delay between calls.
     Updates sync status and broadcasts live events.
+    Guarded by lock to prevent concurrent runs.
     """
+    if _sync_lock.locked():
+        logger.info("Sync already in progress, skipping concurrent run.")
+        return
+
+    async with _sync_lock:
+        await _do_sync_all_members()
+
+async def _do_sync_all_members():
     db = SessionLocal()
     try:
+
         status_row = db.query(models.SyncStatus).filter_by(id=1).first()
         if not status_row:
             status_row = models.SyncStatus(id=1)
