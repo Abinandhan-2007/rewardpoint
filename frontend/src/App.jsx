@@ -249,7 +249,7 @@ export default function App() {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !currentUser) {
     return <LoginView onLoginSuccess={handleLoginSuccess} />;
   }
 
@@ -303,7 +303,7 @@ export default function App() {
               <MembersTable
                 members={members}
                 currentTeam={currentTeam}
-                currentUserId={currentUser.id}
+                currentUserId={currentUser?.id}
                 onSelectMember={(id) => setSelectedMemberId(id)}
                 onOpenAddModal={() => setIsAddModalOpen(true)}
                 onRefreshMember={handleRefreshSingleMember}

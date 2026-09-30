@@ -12,7 +12,6 @@ import {
   Users,
   Copy,
   Check,
-  Award,
   GraduationCap
 } from 'lucide-react';
 import { api, setAuthToken } from '../services/api';

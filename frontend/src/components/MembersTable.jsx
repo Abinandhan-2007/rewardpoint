@@ -31,6 +31,7 @@ export default function MembersTable({
   currentUserId
 }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState('all');
   const [sortField, setSortField] = useState('balance_points');
   const [sortDirection, setSortDirection] = useState('desc');
   const [memberToDelete, setMemberToDelete] = useState(null);

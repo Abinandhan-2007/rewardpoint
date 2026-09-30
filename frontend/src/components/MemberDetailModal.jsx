@@ -7,15 +7,9 @@ import {
   BookOpen, 
   TrendingUp, 
   History, 
-  User, 
-  GraduationCap, 
+  User,
   Building2,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  Sparkles,
-  Layers,
-  Activity
+  Clock
 } from 'lucide-react';
 import { api } from '../services/api';
 
@@ -26,12 +20,6 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
   const [chartMode, setChartMode] = useState('semester'); // 'semester' | 'sync'
   const [hoveredPoint, setHoveredPoint] = useState(null);
   const [isFetchingSingle, setIsFetchingSingle] = useState(false);
-
-  useEffect(() => {
-    if (isOpen && memberId) {
-      loadHistory();
-    }
-  }, [isOpen, memberId]);
 
   const loadHistory = async () => {
     setIsLoading(true);
@@ -44,6 +32,12 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (isOpen && memberId) {
+      loadHistory();
+    }
+  }, [isOpen, memberId]);
 
   const handleInstantFetch = async () => {
     setIsFetchingSingle(true);
@@ -115,25 +109,25 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
           <div>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Initial Carry-Over</span>
             <span className="font-bold text-slate-900 dark:text-white font-mono text-sm">
-              {(semesterProgression?.initial_points || 0).toFixed(0)} pts
+              {(Number(semesterProgression?.initial_points) || 0).toFixed(0)} pts
             </span>
           </div>
           <div>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Earned this Semester</span>
             <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono text-sm">
-              +{(semesterProgression?.semester_earned || 0).toFixed(0)} pts
+              +{(Number(semesterProgression?.semester_earned) || 0).toFixed(0)} pts
             </span>
           </div>
           <div>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Redeemed for IP</span>
             <span className="font-bold text-amber-600 dark:text-amber-400 font-mono text-sm">
-              -{(semesterProgression?.redeemed_points || 0).toFixed(0)} pts
+              -{(Number(semesterProgression?.redeemed_points) || 0).toFixed(0)} pts
             </span>
           </div>
           <div>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Current Balance</span>
             <span className="font-bold text-brand-600 dark:text-brand-400 font-mono text-sm">
-              {(semesterProgression?.current_balance || 0).toFixed(0)} pts
+              {(Number(semesterProgression?.current_balance) || 0).toFixed(0)} pts
             </span>
           </div>
         </div>
@@ -287,7 +281,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
               <div className="text-right shrink-0">
                 <span className="text-[10px] text-slate-400 block font-mono">Cumulative Total</span>
                 <span className="font-bold text-sm text-brand-600 dark:text-brand-400 font-mono">
-                  {hoveredPoint.cumulative_points.toFixed(0)} pts
+                  {(Number(hoveredPoint?.cumulative_points) || 0).toFixed(0)} pts
                 </span>
               </div>
             </div>
@@ -338,7 +332,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                     </span>
                   )}
                   <span className="font-mono font-bold text-slate-900 dark:text-white px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-900 text-[11px]">
-                    {item.cumulative_points.toFixed(0)} pts
+                    {(Number(item?.cumulative_points) || 0).toFixed(0)} pts
                   </span>
                 </div>
               </div>
@@ -515,7 +509,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60">
                       <span className="text-xs text-slate-500 dark:text-slate-400">Balance Points</span>
                       <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
-                        {(current?.balance_points || 0).toFixed(2)}
+                        {(Number(current?.balance_points) || 0).toFixed(2)}
                       </div>
                       <span className="text-[10px] text-brand-600 dark:text-brand-400 font-medium">Available to redeem</span>
                     </div>
@@ -523,7 +517,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60">
                       <span className="text-xs text-slate-500 dark:text-slate-400">Cumulative Points</span>
                       <div className="text-2xl font-bold text-slate-800 dark:text-slate-200 mt-1">
-                        {(current?.cumulative_points || 0).toFixed(2)}
+                        {(Number(current?.cumulative_points) || 0).toFixed(2)}
                       </div>
                       <span className="text-[10px] text-slate-500">Total points earned</span>
                     </div>
@@ -531,7 +525,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60">
                       <span className="text-xs text-slate-500 dark:text-slate-400">Redeemed Points</span>
                       <div className="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-1">
-                        {(current?.redeemed_points || 0).toFixed(2)}
+                        {(Number(current?.redeemed_points) || 0).toFixed(2)}
                       </div>
                       <span className="text-[10px] text-slate-500">Already used for IP</span>
                     </div>
@@ -539,7 +533,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60">
                       <span className="text-xs text-slate-500 dark:text-slate-400">Internal Marks</span>
                       <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 mt-1">
-                        {(current?.total_marks || 0).toFixed(2)}
+                        {(Number(current?.total_marks) || 0).toFixed(2)}
                       </div>
                       <span className="text-[10px] text-emerald-600 dark:text-emerald-500/80">From {current?.total_subjects || 0} subjects</span>
                     </div>
@@ -621,7 +615,7 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                       Innovative Practice (IP) Registered Subjects
                     </h3>
                     <span className="text-xs text-slate-500 dark:text-slate-400">
-                      Total Internal Marks: <strong className="text-emerald-600 dark:text-emerald-400">{(current?.total_marks || 0).toFixed(2)}</strong>
+                      Total Internal Marks: <strong className="text-emerald-600 dark:text-emerald-400">{(Number(current?.total_marks) || 0).toFixed(2)}</strong>
                     </span>
                   </div>
 
@@ -646,20 +640,20 @@ export default function MemberDetailModal({ memberId, isOpen, onClose, onRefresh
                             <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
                               <span className="text-[11px] text-slate-500 dark:text-slate-400 block mb-1">Reward Points</span>
                               <div className="text-sm font-bold text-slate-800 dark:text-slate-200">
-                                {sub.total_points.toFixed(2)} pts
+                                {(Number(sub.total_points || sub.redeemed_points) || 0).toFixed(2)} pts
                               </div>
                               <span className="text-[10px] text-slate-500">
-                                IP1: {sub.ip1_points} | IP2: {sub.ip2_points}
+                                IP1: {sub.ip1_points ?? '-'} | IP2: {sub.ip2_points ?? '-'}
                               </span>
                             </div>
 
                             <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
                               <span className="text-[11px] text-slate-500 dark:text-slate-400 block mb-1">Internal Marks</span>
                               <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
-                                {sub.total_marks.toFixed(2)} marks
+                                {(Number(sub.total_marks || sub.marks) || 0).toFixed(2)} marks
                               </div>
                               <span className="text-[10px] text-slate-500">
-                                IP1: {sub.ip1_marks} | IP2: {sub.ip2_marks}
+                                IP1: {sub.ip1_marks ?? '-'} | IP2: {sub.ip2_marks ?? '-'}
                               </span>
                             </div>
                           </div>

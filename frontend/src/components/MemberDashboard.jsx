@@ -1,21 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Award, 
-  BookOpen, 
   TrendingUp, 
   Users, 
   Clock, 
-  RotateCw, 
-  Calendar, 
-  Sparkles, 
   Trophy, 
-  Medal,
-  ChevronRight,
-  ShieldCheck,
   Building2,
-  User as UserIcon,
-  Layers,
-  Activity
+  User as UserIcon
 } from 'lucide-react';
 import { api } from '../services/api';
 
@@ -25,10 +15,6 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
   const [isLoading, setIsLoading] = useState(true);
   const [hoveredPoint, setHoveredPoint] = useState(null);
   const [activeTab, setActiveTab] = useState('chart'); // 'chart' | 'subjects' | 'activities' | 'history'
-
-  useEffect(() => {
-    loadData();
-  }, []);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -45,6 +31,39 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="py-24 flex flex-col items-center justify-center text-slate-400">
+        <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-3" />
+        <span className="text-xs">Loading your reward points and team standing...</span>
+      </div>
+    );
+  }
+
+  if (!selfData) {
+    return (
+      <div className="py-20 flex flex-col items-center justify-center text-center px-4 space-y-3">
+        <div className="p-3 rounded-2xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
+          <Clock className="w-8 h-8 animate-pulse" />
+        </div>
+        <h3 className="text-base font-bold text-slate-900 dark:text-white">Connecting to Rewards Source...</h3>
+        <p className="text-xs text-slate-500 max-w-sm">
+          Your rewards details are currently syncing. Please wait a few seconds and try refreshing.
+        </p>
+        <button
+          onClick={loadData}
+          className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold cursor-pointer shadow-sm"
+        >
+          Check Again
+        </button>
+      </div>
+    );
+  }
 
   const current = selfData?.current;
   const semesterProgression = selfData?.semester_progression;
@@ -65,11 +84,12 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
   const range = (maxVal - minVal) || 1;
 
   const coords = semesterTimeline.map((item, i) => {
+    const pts = Number(item.cumulative_points) || 0;
     const x = semesterTimeline.length > 1
       ? paddingLeft + (i / (semesterTimeline.length - 1)) * (width - paddingLeft - paddingRight)
       : width / 2;
-    const y = height - paddingBottom - ((item.cumulative_points - minVal) / range) * (height - paddingTop - paddingBottom);
-    return { x, y, item, i };
+    const y = height - paddingBottom - ((pts - minVal) / range) * (height - paddingTop - paddingBottom);
+    return { x: isNaN(x) ? 0 : x, y: isNaN(y) ? 0 : y, item, i };
   });
 
   const pathD = coords.reduce(
@@ -79,15 +99,6 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
   const areaD = coords.length > 0
     ? `${pathD} L ${coords[coords.length - 1].x} ${height - paddingBottom} L ${coords[0].x} ${height - paddingBottom} Z`
     : '';
-
-  if (isLoading) {
-    return (
-      <div className="py-24 flex flex-col items-center justify-center text-slate-400">
-        <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-3" />
-        <span className="text-xs">Loading your reward points and team standing...</span>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6 animate-fade-in text-slate-800 dark:text-slate-100">
@@ -143,7 +154,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
           <span className="text-xs text-slate-500 dark:text-slate-400 block">Balance Points</span>
           <div className="text-2xl font-bold text-brand-600 dark:text-brand-400 font-mono mt-1">
-            {(current?.balance_points || 0).toFixed(2)}
+            {(Number(current?.balance_points) || 0).toFixed(2)}
           </div>
           <span className="text-[10px] text-slate-400">Available to redeem</span>
         </div>
@@ -151,7 +162,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
           <span className="text-xs text-slate-500 dark:text-slate-400 block">Cumulative Points</span>
           <div className="text-2xl font-bold text-slate-900 dark:text-white font-mono mt-1">
-            {(current?.cumulative_points || 0).toFixed(2)}
+            {(Number(current?.cumulative_points) || 0).toFixed(2)}
           </div>
           <span className="text-[10px] text-slate-400">Total earned this sem</span>
         </div>
@@ -159,7 +170,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
           <span className="text-xs text-slate-500 dark:text-slate-400 block">Redeemed for IP</span>
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-400 font-mono mt-1">
-            {(current?.redeemed_points || 0).toFixed(2)}
+            {(Number(current?.redeemed_points) || 0).toFixed(2)}
           </div>
           <span className="text-[10px] text-slate-400">Applied to internal marks</span>
         </div>
@@ -167,7 +178,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
           <span className="text-xs text-slate-500 dark:text-slate-400 block">Total IP Marks</span>
           <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-1">
-            {(current?.total_marks || 0).toFixed(2)}
+            {(Number(current?.total_marks) || 0).toFixed(2)}
           </div>
           <span className="text-[10px] text-emerald-600 dark:text-emerald-500/80">From {current?.total_subjects || 0} subjects</span>
         </div>
@@ -219,25 +230,25 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
                   <div>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Carry-Over</span>
                     <span className="font-bold text-slate-900 dark:text-white font-mono text-sm">
-                      {(semesterProgression?.initial_points || 0).toFixed(0)} pts
+                      {(Number(semesterProgression?.initial_points) || 0).toFixed(0)} pts
                     </span>
                   </div>
                   <div>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Earned this Sem</span>
                     <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono text-sm">
-                      +{(semesterProgression?.semester_earned || 0).toFixed(0)} pts
+                      +{(Number(semesterProgression?.semester_earned) || 0).toFixed(0)} pts
                     </span>
                   </div>
                   <div>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Redeemed for IP</span>
                     <span className="font-bold text-amber-600 dark:text-amber-400 font-mono text-sm">
-                      -{(semesterProgression?.redeemed_points || 0).toFixed(0)} pts
+                      -{(Number(semesterProgression?.redeemed_points) || 0).toFixed(0)} pts
                     </span>
                   </div>
                   <div>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">Current Balance</span>
                     <span className="font-bold text-brand-600 dark:text-brand-400 font-mono text-sm">
-                      {(semesterProgression?.current_balance || 0).toFixed(0)} pts
+                      {(Number(semesterProgression?.current_balance) || 0).toFixed(0)} pts
                     </span>
                   </div>
                 </div>
@@ -382,7 +393,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
                         <div className="text-right shrink-0">
                           <span className="text-[10px] text-slate-400 block font-mono">Cumulative Total</span>
                           <span className="font-bold text-sm text-brand-600 dark:text-brand-400 font-mono">
-                            {hoveredPoint.cumulative_points.toFixed(0)} pts
+                            {(Number(hoveredPoint?.cumulative_points) || 0).toFixed(0)} pts
                           </span>
                         </div>
                       </div>
@@ -422,7 +433,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
                             </span>
                           )}
                           <span className="font-mono font-bold text-slate-900 dark:text-white px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-900 text-[11px]">
-                            {item.cumulative_points.toFixed(0)} pts
+                            {(Number(item?.cumulative_points) || 0).toFixed(0)} pts
                           </span>
                         </div>
                       </div>
@@ -557,21 +568,21 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
                 <span className="text-slate-400 block text-[11px]">Total Points</span>
                 <span className="text-xl font-bold text-brand-600 dark:text-brand-400 font-mono mt-0.5 block">
-                  {(teamSummary?.total_points || 0).toFixed(0)}
+                  {(Number(teamSummary?.total_points) || 0).toFixed(0)}
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
                 <span className="text-slate-400 block text-[11px]">Avg Points / Mem</span>
                 <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5 block">
-                  {(teamSummary?.avg_points || 0).toFixed(1)}
+                  {(Number(teamSummary?.avg_points) || 0).toFixed(1)}
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
                 <span className="text-slate-400 block text-[11px]">Avg IP Marks</span>
                 <span className="text-xl font-bold text-purple-600 dark:text-purple-400 font-mono mt-0.5 block">
-                  {(teamSummary?.avg_marks || 0).toFixed(1)}
+                  {(Number(teamSummary?.avg_marks) || 0).toFixed(1)}
                 </span>
               </div>
             </div>
@@ -637,7 +648,7 @@ export default function MemberDashboard({ currentUser, currentTeam }) {
                     </div>
 
                     <span className="font-mono font-bold text-slate-900 dark:text-white px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
-                      {item.points.toFixed(0)} pts
+                      {(Number(item?.points) || 0).toFixed(0)} pts
                     </span>
                   </div>
                 ))
