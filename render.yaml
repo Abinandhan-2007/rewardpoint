@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: rewardpoint
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    envVars:
+      - key: CAPTAIN_PASSWORD
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: GRADIO_SPACE
+        value: PraneshJs/RewardPointsSite
+      - key: POLL_INTERVAL_MINUTES
+        value: "5"
+      - key: DB_PATH
+        value: /app/backend/tracker.db
