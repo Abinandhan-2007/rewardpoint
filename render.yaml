@@ -2,12 +2,13 @@ services:
   - type: web
     name: rewardpoint
     runtime: docker
+    dockerContext: .
     dockerfilePath: ./Dockerfile
     plan: free
     region: singapore
     envVars:
       - key: CAPTAIN_PASSWORD
-        sync: false
+        value: captain2026
       - key: SECRET_KEY
         generateValue: true
       - key: GRADIO_SPACE
