@@ -50,13 +50,13 @@ async function request(endpoint, options = {}) {
 
 export const api = {
   // ----------------- Auth -----------------
-  login: (team_id, roll_no, password) => request('/auth/login', {
+  login: (team_id, roll_no, password = '') => request('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ team_id, roll_no, password }),
   }),
-  signup: (captain_name, roll_no, password, team_name) => request('/auth/signup', {
+  signup: (team_id, roll_no, password, captain_name = '') => request('/auth/signup', {
     method: 'POST',
-    body: JSON.stringify({ captain_name, roll_no, password, team_name }),
+    body: JSON.stringify({ team_id, roll_no, password, captain_name }),
   }),
   getMe: () => request('/auth/me'),
   changePassword: (current_password, new_password) => request('/auth/change-password', {

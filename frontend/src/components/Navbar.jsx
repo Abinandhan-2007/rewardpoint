@@ -92,7 +92,7 @@ export default function Navbar({
               </div>
 
               <p className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:block">
-                Team: <strong className="text-slate-700 dark:text-slate-300">{currentTeam?.name || 'My Squad'}</strong> • Logged in as {currentUser?.name || currentUser?.roll_no}
+                Team ID: <strong className="text-slate-700 dark:text-slate-300 font-mono">{currentTeam?.team_id}</strong> • Logged in as {currentUser?.name || currentUser?.roll_no}
               </p>
             </div>
           </div>
@@ -171,14 +171,16 @@ export default function Navbar({
               )}
             </button>
 
-            {/* Change Password Button */}
-            <button
-              onClick={onOpenChangePassword}
-              title="Change Password"
-              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700/80 transition-all cursor-pointer"
-            >
-              <Key className="w-4 h-4" />
-            </button>
+            {/* Change Password Button (Captain Only) */}
+            {isCaptain && (
+              <button
+                onClick={onOpenChangePassword}
+                title="Change Captain Password"
+                className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700/80 transition-all cursor-pointer"
+              >
+                <Key className="w-4 h-4" />
+              </button>
+            )}
 
             {/* Logout */}
             <button

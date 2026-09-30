@@ -17,8 +17,8 @@ class Team(Base):
     __tablename__ = "teams"
 
     id = Column(Integer, primary_key=True, index=True)
-    team_id = Column(String(50), unique=True, index=True, nullable=False)  # e.g. "TEAM-4F9K2"
-    name = Column(String(100), nullable=False)
+    team_id = Column(String(50), unique=True, index=True, nullable=False)  # e.g. "ALPHA"
+    name = Column(String(100), nullable=True, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -34,7 +34,7 @@ class User(Base):
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     roll_no = Column(String(50), nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True, default="")
     role = Column(String(20), nullable=False, default="member")  # "captain" | "member"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

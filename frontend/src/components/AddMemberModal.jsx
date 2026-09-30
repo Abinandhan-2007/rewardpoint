@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { X, UserPlus, AlertCircle, Check, Clock, Loader2, Copy, Sparkles, Key } from 'lucide-react';
+import { X, UserPlus, AlertCircle, Check, Clock, Loader2, Copy, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
 
 export default function AddMemberModal({ isOpen, onClose, onMemberAdded, currentTeam }) {
   const [rollNo, setRollNo] = useState('');
   const [name, setName] = useState('');
-  const [customPassword, setCustomPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [createdCredentials, setCreatedCredentials] = useState(null);
@@ -26,16 +25,13 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
       const addedRoll = rollNo.trim().toUpperCase();
       const res = await api.addTeamMember({
         roll_no: addedRoll,
-        name: name.trim() || undefined,
-        password: customPassword.trim() || undefined
+        name: name.trim() || undefined
       });
 
       setCreatedCredentials({
         team_id: res.team_id || currentTeam?.team_id,
-        team_name: res.team_name || currentTeam?.name,
         roll_no: res.roll_no,
-        name: res.name,
-        temp_password: res.temp_password
+        name: res.name
       });
 
       if (onMemberAdded) {
@@ -50,7 +46,7 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
 
   const handleCopyCredentials = () => {
     if (!createdCredentials) return;
-    const text = `Team Reward Tracker Login:\nTeam ID: ${createdCredentials.team_id}\nRoll Number: ${createdCredentials.roll_no}\nTemporary Password: ${createdCredentials.temp_password}\nLogin URL: ${window.location.origin}`;
+    const text = `Team Reward Tracker Login:\nTeam ID: ${createdCredentials.team_id}\nRoll Number: ${createdCredentials.roll_no}\n(No password needed)\nLogin URL: ${window.location.origin}`;
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -59,7 +55,6 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
   const handleResetAndClose = () => {
     setRollNo('');
     setName('');
-    setCustomPassword('');
     setCreatedCredentials(null);
     setError('');
     onClose();
@@ -86,7 +81,7 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
               Add Team Member
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Team: <strong className="text-slate-700 dark:text-slate-300">{currentTeam?.name}</strong> ({currentTeam?.team_id})
+              Team ID: <strong className="text-slate-700 dark:text-slate-300 font-mono">{currentTeam?.team_id}</strong>
             </p>
           </div>
         </div>
@@ -100,7 +95,7 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
                 <span>Member Enrolled & Tracking Started!</span>
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-300">
-                Share these login credentials with the student:
+                Share these login details with the student:
               </p>
 
               <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700/80 font-mono text-xs space-y-1.5 text-slate-800 dark:text-slate-200">
@@ -112,9 +107,9 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
                   <span className="text-slate-400">Roll Number:</span>
                   <span className="font-bold">{createdCredentials.roll_no}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Temp Password:</span>
-                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{createdCredentials.temp_password}</span>
+                <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-sans text-[11px]">
+                  <span>Password:</span>
+                  <span className="font-semibold">Not needed (roll number is enough)</span>
                 </div>
               </div>
 
@@ -124,7 +119,7 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
                 className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-sm"
               >
                 {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                <span>{copied ? 'Credentials Copied to Clipboard!' : 'Copy Credentials to Share'}</span>
+                <span>{copied ? 'Login Info Copied to Clipboard!' : 'Copy Login Details to Share'}</span>
               </button>
             </div>
 
@@ -135,16 +130,15 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
                   setCreatedCredentials(null);
                   setRollNo('');
                   setName('');
-                  setCustomPassword('');
                 }}
-                className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold"
+                className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold cursor-pointer"
               >
                 Add Another Member
               </button>
               <button
                 type="button"
                 onClick={handleResetAndClose}
-                className="flex-1 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold"
+                className="flex-1 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold cursor-pointer"
               >
                 Done
               </button>
@@ -157,9 +151,9 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
               <Clock className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
               <div className="text-[11px] leading-relaxed">
                 <span className="font-semibold block text-indigo-800 dark:text-indigo-300">
-                  ⚡ Auto-Fetch Active:
+                  ⚡ Auto-Fetch & Passwordless:
                 </span>
-                The student's name, reward points, and marks will auto-fetch from Gradio in <strong>~3 seconds</strong>. A temporary login password will be generated for them.
+                The student's name, reward points, and marks will auto-fetch from Gradio in <strong>~3 seconds</strong>. Members do not need a password to log in.
               </div>
             </div>
 
@@ -180,23 +174,10 @@ export default function AddMemberModal({ isOpen, onClose, onMemberAdded, current
                   type="text"
                   value={rollNo}
                   onChange={(e) => setRollNo(e.target.value.toUpperCase())}
-                  placeholder="Enter student roll number..."
+                  placeholder="Enter student roll number (e.g. 7376241CS106)..."
                   required
                   autoFocus
                   className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/90 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all uppercase"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Custom Password <span className="text-[11px] text-slate-400">(Optional, auto-generated if left blank)</span>
-                </label>
-                <input
-                  type="text"
-                  value={customPassword}
-                  onChange={(e) => setCustomPassword(e.target.value)}
-                  placeholder="e.g. member2026 or leave blank"
-                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800/90 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all"
                 />
               </div>
 

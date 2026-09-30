@@ -14,11 +14,14 @@ import {
   Loader2,
   Key,
   Shield,
-  AlertTriangle
+  AlertTriangle,
+  Copy,
+  Check
 } from 'lucide-react';
 
 export default function MembersTable({
   members = [],
+  currentTeam,
   onSelectMember,
   onOpenAddModal,
   onRefreshMember,
@@ -30,8 +33,15 @@ export default function MembersTable({
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState('balance_points');
   const [sortDirection, setSortDirection] = useState('desc');
-  const [filterType, setFilterType] = useState('all'); // 'all' | 'high_points'
   const [memberToDelete, setMemberToDelete] = useState(null);
+  const [copiedMemberId, setCopiedMemberId] = useState(null);
+
+  const handleCopyLoginInfo = (m) => {
+    const text = `Team Reward Tracker Login:\nTeam ID: ${currentTeam?.team_id || ''}\nRoll Number: ${m.roll_no}\n(No password needed)\nLogin URL: ${window.location.origin}`;
+    navigator.clipboard.writeText(text);
+    setCopiedMemberId(m.id);
+    setTimeout(() => setCopiedMemberId(null), 2000);
+  };
 
   // Handle Sort Toggle
   const handleSort = (field) => {
@@ -335,14 +345,20 @@ export default function MembersTable({
                           <RotateCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin text-brand-600' : ''}`} />
                         </button>
 
-                        {/* Reset Password */}
-                        <button
-                          onClick={() => onResetPassword(m)}
-                          title="Reset member password"
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors cursor-pointer"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                        </button>
+                        {/* Copy Member Login Details */}
+                        {!isCaptain && (
+                          <button
+                            onClick={() => handleCopyLoginInfo(m)}
+                            title="Copy student login details (Team ID + Roll No)"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors cursor-pointer"
+                          >
+                            {copiedMemberId === m.id ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-500" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
 
                         {/* Open Details Modal */}
                         <button

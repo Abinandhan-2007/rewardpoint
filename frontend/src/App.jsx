@@ -34,9 +34,9 @@ export default function App() {
   // Active top toast/notification banner
   const [toastNotification, setToastNotification] = useState(null);
 
-  // Theme state
+  // Theme state: default to light mode
   const [darkMode, setDarkMode] = useState(() => {
-    return localStorage.getItem('theme') !== 'light';
+    return localStorage.getItem('theme') === 'dark';
   });
 
   useEffect(() => {
@@ -302,6 +302,7 @@ export default function App() {
             <div className="w-full">
               <MembersTable
                 members={members}
+                currentTeam={currentTeam}
                 currentUserId={currentUser.id}
                 onSelectMember={(id) => setSelectedMemberId(id)}
                 onOpenAddModal={() => setIsAddModalOpen(true)}

@@ -1,3 +1,4 @@
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 from main import app
@@ -12,23 +13,22 @@ def setup_db():
     yield
 
 def test_captain_signup_and_team_generation():
+    test_team_id = f"AVG-{uuid.uuid4().hex[:5].upper()}"
     signup_data = {
+        "team_id": test_team_id,
         "captain_name": "Captain Steve",
-        "roll_no": "7376TEST01",
-        "password": "pass-steve-123",
-        "team_name": "Avengers Squad"
+        "roll_no": f"7376TEST{uuid.uuid4().hex[:4].upper()}",
+        "password": "pass-steve-123"
     }
     res = client.post("/api/auth/signup", json=signup_data)
     assert res.status_code == 200
     data = res.json()
     assert "token" in data
     assert data["role"] == "captain"
-    assert data["team"]["name"] == "Avengers Squad"
-    assert data["team"]["team_id"].startswith("TEAM-")
-    assert data["user"]["roll_no"] == "7376TEST01"
+    assert data["team"]["team_id"] == test_team_id
 
 def test_login_flow():
-    # Login with seeded captain
+    # Login with seeded captain (requires password)
     res = client.post("/api/auth/login", json={
         "team_id": "TEAM-ALPHA",
         "roll_no": "7376241CS280",
@@ -39,14 +39,14 @@ def test_login_flow():
     assert data["role"] == "captain"
     assert "token" in data
 
-    # Login with seeded member
+    # Login with seeded member (NO PASSWORD required - roll number is enough!)
     res_m = client.post("/api/auth/login", json={
         "team_id": "TEAM-ALPHA",
-        "roll_no": "7376231CS101",
-        "password": "member123"
+        "roll_no": "7376231CS101"
     })
     assert res_m.status_code == 200
     assert res_m.json()["role"] == "member"
+    assert "token" in res_m.json()
 
 def test_invalid_login_credentials():
     res = client.post("/api/auth/login", json={
@@ -109,27 +109,34 @@ def test_member_cannot_access_captain_routes():
     assert res_summary.json()["team_id"] == "TEAM-ALPHA"
 
 def test_cross_team_data_isolation():
+    u_suffix = uuid.uuid4().hex[:5].upper()
+    team_blue_id = f"BLUE-{u_suffix}"
+    team_red_id = f"RED-{u_suffix}"
+    cap_blue_roll = f"7376BLU{u_suffix}"
+    cap_red_roll = f"7376RED{u_suffix}"
+    cadet_roll = f"7376CAD{u_suffix}"
+
     # 1. Create Team Blue with Captain Blue
     res_blue = client.post("/api/auth/signup", json={
+        "team_id": team_blue_id,
         "captain_name": "Captain Blue",
-        "roll_no": "7376BLUE01",
-        "password": "pass-blue-123",
-        "team_name": "Team Blue"
+        "roll_no": cap_blue_roll,
+        "password": "pass-blue-123"
     })
     token_blue = res_blue.json()["token"]
     headers_blue = {"Authorization": f"Bearer {token_blue}"}
 
     # Captain Blue adds a member to Team Blue
-    add_m = client.post("/api/team/members", json={"roll_no": "7376BLUE02", "name": "Blue Cadet"}, headers=headers_blue)
+    add_m = client.post("/api/team/members", json={"roll_no": cadet_roll, "name": "Blue Cadet"}, headers=headers_blue)
     assert add_m.status_code == 200
     blue_cadet_id = add_m.json()["id"]
 
     # 2. Create Team Red with Captain Red
     res_red = client.post("/api/auth/signup", json={
+        "team_id": team_red_id,
         "captain_name": "Captain Red",
-        "roll_no": "7376RED01",
-        "password": "pass-red-123",
-        "team_name": "Team Red"
+        "roll_no": cap_red_roll,
+        "password": "pass-red-123"
     })
     token_red = res_red.json()["token"]
     headers_red = {"Authorization": f"Bearer {token_red}"}
@@ -150,17 +157,21 @@ def test_cross_team_data_isolation():
     res_red_members = client.get("/api/team/members", headers=headers_red)
     assert res_red_members.status_code == 200
     red_rolls = [m["roll_no"] for m in res_red_members.json()]
-    assert "7376RED01" in red_rolls
-    assert "7376BLUE01" not in red_rolls
-    assert "7376BLUE02" not in red_rolls
+    assert cap_red_roll in red_rolls
+    assert cap_blue_roll not in red_rolls
+    assert cadet_roll not in red_rolls
 
 def test_change_password_route():
+    p_suffix = uuid.uuid4().hex[:5].upper()
+    pass_team_id = f"PASS-{p_suffix}"
+    pass_cap_roll = f"7376P{p_suffix}"
+
     # Dedicated signup for password change test
     res_t = client.post("/api/auth/signup", json={
+        "team_id": pass_team_id,
         "captain_name": "Pass Tester",
-        "roll_no": "7376PASSCAP",
-        "password": "initialpassword123",
-        "team_name": "Password Team"
+        "roll_no": pass_cap_roll,
+        "password": "initialpassword123"
     })
     token = res_t.json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -176,7 +187,7 @@ def test_change_password_route():
     # Old password fails
     res_old = client.post("/api/auth/login", json={
         "team_id": team_code,
-        "roll_no": "7376PASSCAP",
+        "roll_no": pass_cap_roll,
         "password": "initialpassword123"
     })
     assert res_old.status_code == 401
@@ -184,7 +195,7 @@ def test_change_password_route():
     # New password succeeds
     res_new = client.post("/api/auth/login", json={
         "team_id": team_code,
-        "roll_no": "7376PASSCAP",
+        "roll_no": pass_cap_roll,
         "password": "newpassword456"
     })
     assert res_new.status_code == 200

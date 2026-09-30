@@ -42,7 +42,7 @@ def seed_default_team_if_empty(db):
     # 1. Create Default Seed Team
     seed_team = models.Team(
         team_id="TEAM-ALPHA",
-        name=SEED_TEAM_NAME or "Alpha Squad"
+        name="TEAM-ALPHA"
     )
     db.add(seed_team)
     db.flush()
@@ -57,19 +57,19 @@ def seed_default_team_if_empty(db):
     )
     db.add(captain)
 
-    # 3. Seed Sample Team Members
+    # 3. Seed Sample Team Members (Members need no password)
     sample_members = [
-        ("7376231CS101", "AAMINA A", "member123"),
-        ("7376241CS106", "ABINANDHAN K", "member123"),
-        ("7376242IT306", "sivanagu e", "member123"),
+        ("7376231CS101", "AAMINA A"),
+        ("7376241CS106", "ABINANDHAN K"),
+        ("7376242IT306", "sivanagu e"),
     ]
 
-    for roll, name, pwd in sample_members:
+    for roll, name in sample_members:
         member_user = models.User(
             team_id=seed_team.id,
             name=name,
             roll_no=roll.strip().upper(),
-            password_hash=hash_password(pwd),
+            password_hash="",
             role="member"
         )
         db.add(member_user)

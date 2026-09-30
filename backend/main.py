@@ -86,15 +86,16 @@ if STATIC_DIR and (STATIC_DIR / "assets").exists():
 
 # ----------------- Pydantic Request Schemas -----------------
 class CaptainSignupRequest(BaseModel):
-    captain_name: str = Field(..., min_length=1)
+    team_id: str = Field(..., min_length=2)  # Captain provides their own chosen Team ID
     roll_no: str = Field(..., min_length=2)
     password: str = Field(..., min_length=4)
-    team_name: str = Field(..., min_length=1)
+    captain_name: Optional[str] = ""
+    team_name: Optional[str] = None
 
 class LoginRequest(BaseModel):
-    team_id: str = Field(..., min_length=2)
+    team_id: str = Field(..., min_length=1)
     roll_no: str = Field(..., min_length=2)
-    password: str = Field(..., min_length=1)
+    password: Optional[str] = ""
 
 class MemberAddRequest(BaseModel):
     roll_no: str = Field(..., min_length=2)
@@ -113,23 +114,27 @@ class MemberPasswordResetRequest(BaseModel):
 @app.post("/api/auth/signup")
 async def captain_signup(req: CaptainSignupRequest, db: Session = Depends(get_db)):
     """
-    Captain signup: creates a new team with an auto-generated unique Team ID
-    and registers the captain user.
+    Captain signup: creates a new team with the captain's specified Team ID
+    (not auto-generated) and registers the captain user.
     """
-    c_name = req.captain_name.strip()
+    team_code = req.team_id.strip().upper()
     c_roll = req.roll_no.strip().upper()
-    t_name = req.team_name.strip()
     pwd = req.password.strip()
+    c_name = req.captain_name.strip() if req.captain_name else c_roll
 
-    if not c_name or not c_roll or not t_name or not pwd:
-        raise HTTPException(status_code=400, detail="All fields are required")
+    if not team_code:
+        raise HTTPException(status_code=400, detail="Team ID is required")
+    if not c_roll or not pwd:
+        raise HTTPException(status_code=400, detail="Captain roll number and password are required")
 
-    # Generate a readable unique Team ID (e.g. TEAM-4F9K2)
-    team_code = generate_team_id(db)
+    # Check if Team ID is already taken
+    existing_team = db.query(models.Team).filter(func.upper(models.Team.team_id) == team_code).first()
+    if existing_team:
+        raise HTTPException(status_code=400, detail=f"Team ID '{team_code}' is already taken. Please choose another Team ID.")
 
     new_team = models.Team(
         team_id=team_code,
-        name=t_name
+        name=team_code
     )
     db.add(new_team)
     db.flush()
@@ -158,7 +163,7 @@ async def captain_signup(req: CaptainSignupRequest, db: Session = Depends(get_db
         "team": {
             "id": new_team.id,
             "team_id": new_team.team_id,
-            "name": new_team.name
+            "name": new_team.team_id
         },
         "user": {
             "id": captain_user.id,
@@ -166,14 +171,16 @@ async def captain_signup(req: CaptainSignupRequest, db: Session = Depends(get_db
             "roll_no": captain_user.roll_no,
             "role": "captain"
         },
-        "message": f"Team '{new_team.name}' created! Your Team ID is {new_team.team_id}."
+        "message": f"Team '{new_team.team_id}' created successfully!"
     }
 
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """
-    Login endpoint: requires Team ID, Roll Number, and Password.
+    Login endpoint: requires Team ID and Roll Number.
+    - Members: only need Team ID + Roll Number (no password needed).
+    - Captains: require password verification.
     Rate limited by client IP & roll number.
     """
     client_ip = request.client.host if request.client else "unknown"
@@ -182,7 +189,7 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
     team_code = req.team_id.strip().upper()
     roll_no = req.roll_no.strip().upper()
-    password = req.password.strip()
+    password = (req.password or "").strip()
 
     # 1. Lookup Team
     team = db.query(models.Team).filter(func.upper(models.Team.team_id) == team_code).first()
@@ -190,7 +197,7 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         record_failed_attempt(rate_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Team ID, roll number, or password."
+            detail=f"Team '{team_code}' not found. Please check your Team ID."
         )
 
     # 2. Lookup User within this team
@@ -203,16 +210,18 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         record_failed_attempt(rate_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Team ID, roll number, or password."
+            detail=f"Roll number '{roll_no}' not found in Team '{team_code}'."
         )
 
-    # 3. Verify password
-    if not verify_password(password, user.password_hash):
-        record_failed_attempt(rate_key)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Team ID, roll number, or password."
-        )
+    # 3. Role-based verification:
+    # Members do NOT need password! Roll number is enough.
+    if user.role == "captain":
+        if not password or not verify_password(password, user.password_hash):
+            record_failed_attempt(rate_key)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid captain password."
+            )
 
     # Clear rate limiter count on success
     record_successful_attempt(rate_key)
@@ -224,7 +233,7 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         "team": {
             "id": team.id,
             "team_id": team.team_id,
-            "name": team.name
+            "name": team.team_id
         },
         "user": {
             "id": user.id,
@@ -329,8 +338,8 @@ async def add_team_member(
     db: Session = Depends(get_db)
 ):
     """
-    Captain adds a member: roll number is required, optional temporary password
-    (auto-generated if omitted). Returns credentials for captain to share.
+    Captain adds a member: roll number is required.
+    Members do not require passwords; they log in using Team ID + Roll Number.
     """
     captain, team = auth
     roll = req.roll_no.strip().upper()
@@ -345,18 +354,16 @@ async def add_team_member(
     if existing:
         raise HTTPException(
             status_code=400,
-            detail=f"Member with roll number {roll} already exists in team {team.name}."
+            detail=f"Member with roll number {roll} already exists in team {team.team_id}."
         )
 
-    # Use provided password or auto-generate a friendly temp password
-    temp_password = req.password.strip() if req.password and req.password.strip() else f"pass-{secrets.token_hex(2).upper()}"
     given_name = req.name.strip() if req.name and req.name.strip() else roll
 
     new_user = models.User(
         team_id=team.id,
         roll_no=roll,
         name=given_name,
-        password_hash=hash_password(temp_password),
+        password_hash="",
         role="member"
     )
     db.add(new_user)
@@ -387,9 +394,8 @@ async def add_team_member(
         "roll_no": new_user.roll_no,
         "name": new_user.name,
         "team_id": team.team_id,
-        "team_name": team.name,
-        "temp_password": temp_password,
-        "message": f"Member {new_user.roll_no} added! Share these credentials with the student."
+        "team_name": team.team_id,
+        "message": f"Member {new_user.roll_no} added! The student can log in using Team ID '{team.team_id}' and Roll No '{new_user.roll_no}' (no password needed)."
     }
 
 
