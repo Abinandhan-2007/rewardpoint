@@ -3,6 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from config import (
     DATABASE_URL,
+    ENABLE_SEED,
     SEED_TEAM_NAME,
     SEED_CAPTAIN_ROLL,
     SEED_CAPTAIN_PASSWORD,
@@ -94,8 +95,9 @@ def init_db():
             db.add(status_row)
             db.commit()
 
-        # Seed initial team and users if empty
-        seed_default_team_if_empty(db)
+        # Seed initial team and users if empty and enabled
+        if ENABLE_SEED:
+            seed_default_team_if_empty(db)
     finally:
         db.close()
 

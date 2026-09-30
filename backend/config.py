@@ -28,7 +28,8 @@ if DB_PATH:
 else:
     DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR.as_posix()}/tracker.db")
 
-# Seed Configuration for First Captain and Team
+# Seed Configuration for First Captain and Team (Disabled by default to keep DB clean)
+ENABLE_SEED = os.getenv("ENABLE_SEED", "false").lower() == "true"
 SEED_TEAM_NAME = os.getenv("SEED_TEAM_NAME", "Alpha Squad")
 SEED_CAPTAIN_ROLL = os.getenv("SEED_CAPTAIN_ROLL", "7376241CS280")
 SEED_CAPTAIN_PASSWORD = os.getenv("SEED_CAPTAIN_PASSWORD", "captain2026")

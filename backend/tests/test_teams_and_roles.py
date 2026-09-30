@@ -2,7 +2,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from main import app
-from database import SessionLocal, init_db
+from database import SessionLocal, init_db, seed_default_team_if_empty
 import models
 
 client = TestClient(app)
@@ -10,6 +10,9 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def setup_db():
     init_db()
+    db = SessionLocal()
+    seed_default_team_if_empty(db)
+    db.close()
     yield
 
 def test_captain_signup_and_team_generation():
