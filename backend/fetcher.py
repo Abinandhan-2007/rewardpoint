@@ -2,81 +2,66 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any, List
+from collections import defaultdict
+from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 
 from gradio_client import Client
 from config import GRADIO_SPACE, FETCH_DELAY_SECONDS, MAX_RETRIES
-import models
 from database import SessionLocal
+import models
 from parser import parse_student_details, parse_subjects_and_marks
 from events import event_manager
 
 logger = logging.getLogger("fetcher")
-logging.basicConfig(level=logging.INFO)
 
 class GradioFetcher:
     def __init__(self, space_name: str = GRADIO_SPACE):
         self.space_name = space_name
-        self._client: Optional[Client] = None
+        self.client: Optional[Client] = None
         self._lock = asyncio.Lock()
 
-    def get_client(self) -> Client:
-        if self._client is None:
-            logger.info(f"Connecting to Gradio space: {self.space_name}...")
-            self._client = Client(self.space_name)
-            logger.info("Connected to Gradio space successfully!")
-        return self._client
+    async def _get_client(self) -> Client:
+        async with self._lock:
+            if self.client is None:
+                logger.info(f"Connecting to Gradio space: {self.space_name}...")
+                self.client = await asyncio.to_thread(Client, self.space_name)
+                logger.info("Connected to Gradio space successfully!")
+            return self.client
 
-    def _call_predict(self, roll_no: str, api_name: str) -> str:
-        """Synchronous wrapper for gradio_client.Client.predict"""
-        client = self.get_client()
-        result = client.predict(roll_no=roll_no, api_name=api_name)
-        return str(result) if result is not None else ""
-
-    async def fetch_endpoint_with_retry(self, roll_no: str, api_name: str) -> Tuple[bool, str]:
-        """
-        Call Gradio endpoint with exponential backoff up to MAX_RETRIES.
-        Returns (success: bool, raw_response_or_error: str)
-        """
-        delay = 1.0
-        last_error = ""
-
+    async def _predict_with_retry(self, fn_name: str, *args) -> Tuple[bool, str]:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                # Run synchronous gradio_client in thread pool to not block asyncio event loop
-                raw_text = await asyncio.to_thread(self._call_predict, roll_no, api_name)
-                return True, raw_text
+                client = await self._get_client()
+                result = await asyncio.to_thread(
+                    client.predict,
+                    *args,
+                    api_name=fn_name
+                )
+                return True, str(result)
             except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Attempt {attempt}/{MAX_RETRIES} failed for roll '{roll_no}' on {api_name}: {last_error}")
-                # Reset client on connection errors to force reconnect next time
-                if "connect" in last_error.lower() or "timeout" in last_error.lower():
-                    self._client = None
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(delay)
-                    delay *= 2  # Exponential backoff: 1s, 2s, 4s
-
-        return False, last_error
+                logger.warning(f"Attempt {attempt}/{MAX_RETRIES} failed for {fn_name}: {e}")
+                if attempt == MAX_RETRIES:
+                    return False, f"Failed after {MAX_RETRIES} attempts: {str(e)}"
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+        return False, "Unknown error during prediction"
 
     async def fetch_member_data(self, roll_no: str) -> Dict[str, Any]:
         """
-        Fetch both /search_student and /extract_subjects_and_marks_for_gradio.
-        Returns parsed dictionaries along with raw text and fetch statuses.
+        Fetch both /search_student and /extract_subjects_and_marks_for_gradio
+        for a given roll number.
         """
         roll_no = roll_no.strip().upper()
+        ok1, raw_student = await self._predict_with_retry("/search_student", roll_no)
+        ok2, raw_subjects = await self._predict_with_retry("/extract_subjects_and_marks_for_gradio", roll_no)
 
-        # 1. Fetch Student Details
-        ok1, raw_student = await self.fetch_endpoint_with_retry(roll_no, "/search_student")
         if ok1:
             parsed_student = parse_student_details(raw_student)
         else:
             parsed_student = {
                 "status": "error",
-                "error_message": f"Failed after {MAX_RETRIES} attempts: {raw_student}",
-                "raw_text": "",
                 "roll_no": roll_no,
-                "student_name": "",
+                "error_message": raw_student,
                 "balance_points": 0.0,
                 "cumulative_points": 0.0,
                 "redeemed_points": 0.0,
@@ -84,19 +69,15 @@ class GradioFetcher:
                 "breakdown": {}
             }
 
-        # 2. Fetch Subjects and Marks
-        ok2, raw_subjects = await self.fetch_endpoint_with_retry(roll_no, "/extract_subjects_and_marks_for_gradio")
         if ok2:
             parsed_subjects = parse_subjects_and_marks(raw_subjects)
         else:
             parsed_subjects = {
                 "status": "error",
-                "error_message": f"Failed after {MAX_RETRIES} attempts: {raw_subjects}",
-                "raw_text": "",
-                "subjects": [],
-                "total_reward_points": 0.0,
+                "error_message": raw_subjects,
                 "total_internal_marks": 0.0,
-                "total_subjects": 0
+                "total_subjects": 0,
+                "subjects": []
             }
 
         return {
@@ -113,23 +94,19 @@ gradio_fetcher = GradioFetcher()
 def detect_changes(
     prev_snapshot: Optional[models.Snapshot],
     new_data: Dict[str, Any],
-    member: models.Member
+    user: models.User
 ) -> List[Dict[str, Any]]:
     """
-    Compare previous snapshot with newly parsed data.
-    Returns list of change events if differences are found.
+    Compare new data against previous snapshot and generate change log entries.
     """
-    changes: List[Dict[str, Any]] = []
-    now = datetime.utcnow()
+    if not prev_snapshot:
+        return []
 
+    changes = []
+    now = datetime.utcnow()
     student_data = new_data["parsed_student"]
     subjects_data = new_data["parsed_subjects"]
 
-    # If first snapshot, we don't log diffs, but we record the initial snapshot
-    if not prev_snapshot:
-        return changes
-
-    # Only compare if the new fetch was successful or had data
     if student_data["status"] == "success":
         new_balance = student_data["balance_points"]
         old_balance = prev_snapshot.balance_points
@@ -186,45 +163,32 @@ def detect_changes(
                 "timestamp": now
             })
 
-        new_subj_count = subjects_data["total_subjects"]
-        old_subj_count = prev_snapshot.total_subjects
-        if new_subj_count != old_subj_count:
-            desc = f"Subjects count changed: {old_subj_count} → {new_subj_count}"
-            changes.append({
-                "field_name": "subjects_count",
-                "old_value": str(old_subj_count),
-                "new_value": str(new_subj_count),
-                "description": desc,
-                "timestamp": now
-            })
-
     return changes
 
 
-async def process_member_snapshot(
+async def process_user_snapshot(
     db: Session,
-    member: models.Member,
+    user: models.User,
     fetched_data: Dict[str, Any]
 ) -> models.Snapshot:
     """
-    Save new snapshot, compare changes, write change logs, and push live SSE updates.
+    Save new snapshot, compare changes, write change logs, and push live SSE updates
+    strictly isolated to this user's team.
     """
     student_data = fetched_data["parsed_student"]
     subjects_data = fetched_data["parsed_subjects"]
     now = datetime.utcnow()
 
-    # Get most recent snapshot
+    # Get most recent snapshot for this user
     prev_snapshot = (
         db.query(models.Snapshot)
-        .filter(models.Snapshot.member_id == member.id)
+        .filter(models.Snapshot.user_id == user.id)
         .order_by(models.Snapshot.timestamp.desc())
         .first()
     )
 
-    # Detect differences
-    change_items = detect_changes(prev_snapshot, fetched_data, member)
+    change_items = detect_changes(prev_snapshot, fetched_data, user)
 
-    # Create new snapshot record
     fetch_status = "success"
     error_msg = None
     if student_data["status"] != "success":
@@ -234,17 +198,14 @@ async def process_member_snapshot(
         fetch_status = "partial"
         error_msg = subjects_data.get("error_message")
 
-    # Update member name if fetched from Gradio
-    fetched_name = (student_data.get("student_name") or "").strip()
-    if fetched_name and fetched_name != "Unknown":
-        member_name_clean = (member.name or "").strip().upper()
-        roll_clean = (member.roll_no or "").strip().upper()
-        if member_name_clean == roll_clean or not member.name:
-            member.name = fetched_name
-            member.updated_at = now
+    # Auto-update user's name if fetched from student details and not custom-renamed
+    if student_data.get("student_name") and student_data["student_name"].strip() not in ("Unknown", "N/A", ""):
+        user.name = student_data["student_name"].strip()
+        user.updated_at = now
 
     new_snapshot = models.Snapshot(
-        member_id=member.id,
+        team_id=user.team_id,
+        user_id=user.id,
         timestamp=now,
         balance_points=student_data.get("balance_points", 0.0),
         cumulative_points=student_data.get("cumulative_points", 0.0),
@@ -266,11 +227,11 @@ async def process_member_snapshot(
     )
     db.add(new_snapshot)
 
-    # Save change logs
     saved_changes = []
     for ch in change_items:
         log_entry = models.ChangeLog(
-            member_id=member.id,
+            team_id=user.team_id,
+            user_id=user.id,
             timestamp=ch["timestamp"],
             field_name=ch["field_name"],
             old_value=ch["old_value"],
@@ -283,11 +244,13 @@ async def process_member_snapshot(
     db.commit()
     db.refresh(new_snapshot)
 
-    # Broadcast live SSE notifications
+    # Broadcast live SSE update ONLY to members of the same team
     member_summary = {
-        "id": member.id,
-        "roll_no": member.roll_no,
-        "name": member.name,
+        "id": user.id,
+        "team_id": user.team_id,
+        "roll_no": user.roll_no,
+        "name": user.name,
+        "role": user.role,
         "balance_points": new_snapshot.balance_points,
         "cumulative_points": new_snapshot.cumulative_points,
         "redeemed_points": new_snapshot.redeemed_points,
@@ -301,44 +264,33 @@ async def process_member_snapshot(
         "has_recent_change": len(saved_changes) > 0
     }
 
-    # Broadcast member update
-    await event_manager.broadcast("member_updated", member_summary)
+    await event_manager.broadcast("member_updated", member_summary, team_id=user.team_id)
 
-    # If any changes were detected, broadcast change alert
     for ch in saved_changes:
         await event_manager.broadcast("change_alert", {
-            "member_id": member.id,
-            "member_name": member.name,
-            "roll_no": member.roll_no,
+            "user_id": user.id,
+            "team_id": user.team_id,
+            "member_name": user.name,
+            "roll_no": user.roll_no,
             "field": ch["field_name"],
             "old_value": ch["old_value"],
             "new_value": ch["new_value"],
             "description": ch["description"],
             "timestamp": ch["timestamp"].isoformat()
-        })
+        }, team_id=user.team_id)
 
     return new_snapshot
 
 
-_sync_lock = asyncio.Lock()
-
 async def sync_all_members():
     """
-    Fetch all active members sequentially with 0.5s delay between calls.
-    Updates sync status and broadcasts live events.
-    Guarded by lock to prevent concurrent runs.
+    Fetch data from Gradio Space for every member of every team.
+    Fetch one roll number at a time with a 0.5s delay.
+    If the same roll number appears in several teams, fetch it ONCE per cycle
+    and share the result across all matching users.
     """
-    if _sync_lock.locked():
-        logger.info("Sync already in progress, skipping concurrent run.")
-        return
-
-    async with _sync_lock:
-        await _do_sync_all_members()
-
-async def _do_sync_all_members():
     db = SessionLocal()
     try:
-
         status_row = db.query(models.SyncStatus).filter_by(id=1).first()
         if not status_row:
             status_row = models.SyncStatus(id=1)
@@ -355,32 +307,47 @@ async def _do_sync_all_members():
             "source_reachable": status_row.source_reachable
         })
 
-        members = db.query(models.Member).filter(models.Member.is_active == True).all()
-        logger.info(f"Starting sync for {len(members)} team members...")
+        all_users = db.query(models.User).all()
+        logger.info(f"Starting sync cycle for {len(all_users)} total users...")
+
+        # Group users by distinct roll number to avoid redundant calls
+        roll_to_users: Dict[str, List[models.User]] = defaultdict(list)
+        for u in all_users:
+            roll_to_users[u.roll_no.strip().upper()].append(u)
+
+        logger.info(f"Unique roll numbers across all teams: {len(roll_to_users)}")
 
         overall_reachable = True
         failed_count = 0
 
-        for member in members:
+        for roll_no, users_list in roll_to_users.items():
             try:
-                fetched = await gradio_fetcher.fetch_member_data(member.roll_no)
+                # Fetch once for this roll number
+                fetched = await gradio_fetcher.fetch_member_data(roll_no)
                 if not fetched["source_reachable"]:
                     overall_reachable = False
                     failed_count += 1
-                
-                await process_member_snapshot(db, member, fetched)
+
+                # Share the result across all users having this roll number
+                for user in users_list:
+                    try:
+                        await process_user_snapshot(db, user, fetched)
+                    except Exception as ue:
+                        logger.error(f"Error processing user {user.id} ({roll_no}): {ue}")
+
             except Exception as e:
-                logger.error(f"Error processing member {member.roll_no}: {e}")
+                logger.error(f"Error fetching roll_no {roll_no}: {e}")
                 failed_count += 1
 
-            # Respect the 0.5s delay between members to avoid overloading the source server
+            # Polite delay between external Gradio calls
             await asyncio.sleep(FETCH_DELAY_SECONDS)
 
-        status_row.status = "success" if failed_count == 0 else ("partial" if failed_count < len(members) else "error")
+        total_rolls = len(roll_to_users)
+        status_row.status = "success" if failed_count == 0 else ("partial" if failed_count < total_rolls else "error")
         status_row.last_sync_finish = datetime.utcnow()
         status_row.source_reachable = overall_reachable
-        if failed_count == len(members) and len(members) > 0:
-            status_row.last_error = "All member queries failed or source unreachable"
+        if failed_count == total_rolls and total_rolls > 0:
+            status_row.last_error = "All student queries failed or Gradio Space unreachable"
         db.commit()
 
         await event_manager.broadcast("sync_status", {
@@ -389,7 +356,7 @@ async def _do_sync_all_members():
             "source_reachable": status_row.source_reachable,
             "last_error": status_row.last_error
         })
-        logger.info("Sync finished successfully!")
+        logger.info("Sync cycle completed.")
 
     except Exception as e:
         logger.error(f"Fatal error in sync_all_members: {e}")

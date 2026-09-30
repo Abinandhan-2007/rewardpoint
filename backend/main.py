@@ -2,26 +2,49 @@ import os
 import io
 import csv
 import json
+import secrets
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Response
+from fastapi import FastAPI, Depends, HTTPException, Query, Response, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 import models
 from database import engine, init_db, get_db, SessionLocal
-from config import CAPTAIN_PASSWORD, PORT, HOST, STATIC_DIR
-from auth import create_access_token, get_current_captain
-from fetcher import gradio_fetcher, process_member_snapshot
+from config import (
+    PORT,
+    HOST,
+    STATIC_DIR,
+    SEED_TEAM_NAME,
+    SEED_CAPTAIN_ROLL,
+    SEED_CAPTAIN_PASSWORD
+)
+from auth import (
+    hash_password,
+    verify_password,
+    generate_team_id,
+    create_access_token,
+    check_login_rate_limit,
+    record_failed_attempt,
+    record_successful_attempt,
+    get_current_user,
+    require_captain,
+    require_member_or_captain
+)
+from fetcher import gradio_fetcher, process_user_snapshot
 from scheduler import scheduler
 from events import event_manager
 from semester_timeline import generate_semester_timeline
+
+logger = logging.getLogger("api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,8 +57,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Team Reward Tracker API",
-    description="Backend API for Captain's Team Reward Tracker with live Gradio sync",
-    version="1.0.0",
+    description="Multi-Team Reward Tracker with Captain and Member Roles & Gradio Synchronization",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -61,65 +84,227 @@ def api_health():
 if STATIC_DIR and (STATIC_DIR / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
-# ----------------- Pydantic Schemas -----------------
+# ----------------- Pydantic Request Schemas -----------------
+class CaptainSignupRequest(BaseModel):
+    captain_name: str = Field(..., min_length=1)
+    roll_no: str = Field(..., min_length=2)
+    password: str = Field(..., min_length=4)
+    team_name: str = Field(..., min_length=1)
+
 class LoginRequest(BaseModel):
-    password: str
+    team_id: str = Field(..., min_length=2)
+    roll_no: str = Field(..., min_length=2)
+    password: str = Field(..., min_length=1)
 
-class MemberCreate(BaseModel):
-    name: str
-    roll_no: str
-
-class MemberUpdate(BaseModel):
+class MemberAddRequest(BaseModel):
+    roll_no: str = Field(..., min_length=2)
     name: Optional[str] = None
-    roll_no: Optional[str] = None
+    password: Optional[str] = None
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=4)
+
+class MemberPasswordResetRequest(BaseModel):
+    new_password: Optional[str] = None
 
 
-# ----------------- Auth Routes -----------------
+# ----------------- Auth & Team Creation Routes -----------------
+@app.post("/api/auth/signup")
+async def captain_signup(req: CaptainSignupRequest, db: Session = Depends(get_db)):
+    """
+    Captain signup: creates a new team with an auto-generated unique Team ID
+    and registers the captain user.
+    """
+    c_name = req.captain_name.strip()
+    c_roll = req.roll_no.strip().upper()
+    t_name = req.team_name.strip()
+    pwd = req.password.strip()
+
+    if not c_name or not c_roll or not t_name or not pwd:
+        raise HTTPException(status_code=400, detail="All fields are required")
+
+    # Generate a readable unique Team ID (e.g. TEAM-4F9K2)
+    team_code = generate_team_id(db)
+
+    new_team = models.Team(
+        team_id=team_code,
+        name=t_name
+    )
+    db.add(new_team)
+    db.flush()
+
+    captain_user = models.User(
+        team_id=new_team.id,
+        name=c_name,
+        roll_no=c_roll,
+        password_hash=hash_password(pwd),
+        role="captain"
+    )
+    db.add(captain_user)
+    db.commit()
+    db.refresh(new_team)
+    db.refresh(captain_user)
+
+    # Issue JWT token
+    token = create_access_token(captain_user, new_team)
+
+    # Trigger background fetch for captain's own roll number
+    asyncio.create_task(_fetch_single_user_task(captain_user.id))
+
+    return {
+        "token": token,
+        "role": "captain",
+        "team": {
+            "id": new_team.id,
+            "team_id": new_team.team_id,
+            "name": new_team.name
+        },
+        "user": {
+            "id": captain_user.id,
+            "name": captain_user.name,
+            "roll_no": captain_user.roll_no,
+            "role": "captain"
+        },
+        "message": f"Team '{new_team.name}' created! Your Team ID is {new_team.team_id}."
+    }
+
+
 @app.post("/api/auth/login")
-def login(req: LoginRequest):
-    if req.password.strip() == CAPTAIN_PASSWORD:
-        token = create_access_token()
-        return {"token": token, "role": "captain", "message": "Login successful"}
-    raise HTTPException(status_code=401, detail="Invalid captain password")
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    """
+    Login endpoint: requires Team ID, Roll Number, and Password.
+    Rate limited by client IP & roll number.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:{req.roll_no.strip().upper()}"
+    check_login_rate_limit(rate_key)
+
+    team_code = req.team_id.strip().upper()
+    roll_no = req.roll_no.strip().upper()
+    password = req.password.strip()
+
+    # 1. Lookup Team
+    team = db.query(models.Team).filter(func.upper(models.Team.team_id) == team_code).first()
+    if not team:
+        record_failed_attempt(rate_key)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Team ID, roll number, or password."
+        )
+
+    # 2. Lookup User within this team
+    user = (
+        db.query(models.User)
+        .filter(models.User.team_id == team.id, func.upper(models.User.roll_no) == roll_no)
+        .first()
+    )
+    if not user:
+        record_failed_attempt(rate_key)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Team ID, roll number, or password."
+        )
+
+    # 3. Verify password
+    if not verify_password(password, user.password_hash):
+        record_failed_attempt(rate_key)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Team ID, roll number, or password."
+        )
+
+    # Clear rate limiter count on success
+    record_successful_attempt(rate_key)
+
+    token = create_access_token(user, team)
+    return {
+        "token": token,
+        "role": user.role,
+        "team": {
+            "id": team.id,
+            "team_id": team.team_id,
+            "name": team.name
+        },
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "roll_no": user.roll_no,
+            "role": user.role
+        },
+        "message": "Login successful"
+    }
+
 
 @app.get("/api/auth/me")
-def get_me(captain = Depends(get_current_captain)):
-    return {"role": "captain", "status": "authenticated"}
+def get_me(auth = Depends(get_current_user)):
+    user, team = auth
+    return {
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "roll_no": user.roll_no,
+            "role": user.role
+        },
+        "team": {
+            "id": team.id,
+            "team_id": team.team_id,
+            "name": team.name
+        }
+    }
 
 
-# ----------------- Member Management Routes -----------------
-@app.get("/api/members")
-def get_members(
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
+@app.post("/api/auth/change-password")
+def change_password(
+    req: PasswordChangeRequest,
+    auth = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    members = db.query(models.Member).filter(models.Member.is_active == True).all()
-    results = []
+    """Any authenticated user can change their own password"""
+    user, _ = auth
+    if not verify_password(req.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password does not match.")
     
-    # 24 hour threshold for "recent change"
+    user.password_hash = hash_password(req.new_password)
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": "Password updated successfully."}
+
+
+# ----------------- Captain Routes -----------------
+@app.get("/api/team/members")
+def get_team_members(
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
+):
+    """
+    Captain view: returns all members of the captain's team with their latest stats.
+    """
+    captain, team = auth
+    users = db.query(models.User).filter(models.User.team_id == team.id).all()
+    results = []
     cutoff = datetime.utcnow() - timedelta(hours=24)
 
-    for m in members:
+    for u in users:
         latest_snapshot = (
             db.query(models.Snapshot)
-            .filter(models.Snapshot.member_id == m.id)
+            .filter(models.Snapshot.user_id == u.id)
             .order_by(models.Snapshot.timestamp.desc())
             .first()
         )
-        
-        # Check if there was any change logged recently
         recent_change = (
             db.query(models.ChangeLog)
-            .filter(models.ChangeLog.member_id == m.id, models.ChangeLog.timestamp >= cutoff)
+            .filter(models.ChangeLog.user_id == u.id, models.ChangeLog.timestamp >= cutoff)
             .order_by(models.ChangeLog.timestamp.desc())
             .first()
         )
 
-        item = {
-            "id": m.id,
-            "roll_no": m.roll_no,
-            "name": m.name,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
+        results.append({
+            "id": u.id,
+            "roll_no": u.roll_no,
+            "name": u.name,
+            "role": u.role,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
             "balance_points": latest_snapshot.balance_points if latest_snapshot else 0.0,
             "cumulative_points": latest_snapshot.cumulative_points if latest_snapshot else 0.0,
             "redeemed_points": latest_snapshot.redeemed_points if latest_snapshot else 0.0,
@@ -130,180 +315,437 @@ def get_members(
             "mentor_name": latest_snapshot.mentor_name if latest_snapshot else None,
             "last_updated": latest_snapshot.timestamp.isoformat() if latest_snapshot else None,
             "fetch_status": latest_snapshot.fetch_status if latest_snapshot else "pending",
-            "error_message": latest_snapshot.error_message if latest_snapshot else None,
             "has_recent_change": recent_change is not None,
-            "recent_change_desc": recent_change.description if recent_change else None,
-            "recent_change_time": recent_change.timestamp.isoformat() if recent_change else None
-        }
-        results.append(item)
+            "recent_change_desc": recent_change.description if recent_change else None
+        })
 
     return results
 
-@app.post("/api/members")
-async def add_member(
-    req: MemberCreate,
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
+
+@app.post("/api/team/members")
+async def add_team_member(
+    req: MemberAddRequest,
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
 ):
-    roll_no = req.roll_no.strip().upper()
-    name = req.name.strip()
-
-    if not roll_no:
+    """
+    Captain adds a member: roll number is required, optional temporary password
+    (auto-generated if omitted). Returns credentials for captain to share.
+    """
+    captain, team = auth
+    roll = req.roll_no.strip().upper()
+    if not roll:
         raise HTTPException(status_code=400, detail="Roll number is required")
-    if not name:
-        name = roll_no
 
-    existing = db.query(models.Member).filter(models.Member.roll_no == roll_no).first()
+    # Check if this roll number already exists in this team
+    existing = db.query(models.User).filter(
+        models.User.team_id == team.id,
+        models.User.roll_no == roll
+    ).first()
     if existing:
-        if not existing.is_active:
-            existing.is_active = True
-            existing.name = name
-            db.commit()
-            db.refresh(existing)
-            # Trigger background fetch for this member
-            asyncio.create_task(_fetch_single_member_task(existing.id))
-            return {"id": existing.id, "roll_no": existing.roll_no, "name": existing.name, "message": "Member reactivated"}
-        raise HTTPException(status_code=400, detail=f"Member with roll number {roll_no} already exists")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Member with roll number {roll} already exists in team {team.name}."
+        )
 
-    new_member = models.Member(
-        roll_no=roll_no,
-        name=name,
-        is_active=True
+    # Use provided password or auto-generate a friendly temp password
+    temp_password = req.password.strip() if req.password and req.password.strip() else f"pass-{secrets.token_hex(2).upper()}"
+    given_name = req.name.strip() if req.name and req.name.strip() else roll
+
+    new_user = models.User(
+        team_id=team.id,
+        roll_no=roll,
+        name=given_name,
+        password_hash=hash_password(temp_password),
+        role="member"
     )
-    db.add(new_member)
+    db.add(new_user)
     db.commit()
-    db.refresh(new_member)
+    db.refresh(new_user)
 
-    # Immediately broadcast that the member was added and is currently fetching
+    # Broadcast initial entry
     await event_manager.broadcast("member_updated", {
-        "id": new_member.id,
-        "roll_no": new_member.roll_no,
-        "name": new_member.name,
+        "id": new_user.id,
+        "team_id": team.id,
+        "roll_no": new_user.roll_no,
+        "name": new_user.name,
+        "role": "member",
         "balance_points": 0.0,
         "cumulative_points": 0.0,
         "redeemed_points": 0.0,
         "total_marks": 0.0,
         "total_subjects": 0,
-        "year": None,
-        "department": None,
-        "mentor_name": None,
-        "last_updated": datetime.utcnow().isoformat(),
         "fetch_status": "fetching",
         "has_recent_change": False
-    })
+    }, team_id=team.id)
 
-    # Immediately fetch member data in the background so it populates right away
-    asyncio.create_task(_fetch_single_member_task(new_member.id))
+    # Trigger background fetch immediately for this member
+    asyncio.create_task(_fetch_single_user_task(new_user.id))
 
     return {
-        "id": new_member.id, 
-        "roll_no": new_member.roll_no, 
-        "name": new_member.name, 
-        "message": f"Member {new_member.roll_no} added! Fetching live details from Gradio Space...",
-        "fetch_status": "fetching"
+        "id": new_user.id,
+        "roll_no": new_user.roll_no,
+        "name": new_user.name,
+        "team_id": team.team_id,
+        "team_name": team.name,
+        "temp_password": temp_password,
+        "message": f"Member {new_user.roll_no} added! Share these credentials with the student."
     }
 
-@app.put("/api/members/{member_id}")
-def update_member(
-    member_id: int,
-    req: MemberUpdate,
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
+
+@app.delete("/api/team/members/{user_id}")
+def remove_team_member(
+    user_id: int,
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
 ):
-    member = db.query(models.Member).filter(models.Member.id == member_id, models.Member.is_active == True).first()
-    if not member:
-        raise HTTPException(status_code=404, detail="Member not found")
+    """
+    Captain removes a member: deletes member and cascades stored data (snapshots, logs).
+    """
+    captain, team = auth
+    if user_id == captain.id:
+        raise HTTPException(status_code=400, detail="Captains cannot remove their own account from the team.")
 
-    if req.name is not None and req.name.strip():
-        member.name = req.name.strip()
-    if req.roll_no is not None and req.roll_no.strip():
-        new_roll = req.roll_no.strip().upper()
-        if new_roll != member.roll_no:
-            # Check duplicate
-            other = db.query(models.Member).filter(models.Member.roll_no == new_roll, models.Member.id != member_id).first()
-            if other:
-                raise HTTPException(status_code=400, detail=f"Roll number {new_roll} is already in use")
-            member.roll_no = new_roll
-            # Trigger re-fetch for new roll number
-            asyncio.create_task(_fetch_single_member_task(member.id))
+    target = db.query(models.User).filter(
+        models.User.id == user_id,
+        models.User.team_id == team.id
+    ).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Member not found in your team.")
 
-    member.updated_at = datetime.utcnow()
+    roll_deleted = target.roll_no
+    name_deleted = target.name
+    db.delete(target)
     db.commit()
-    return {"message": "Member updated successfully"}
 
-@app.delete("/api/members/{member_id}")
-def delete_member(
-    member_id: int,
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
-):
-    member = db.query(models.Member).filter(models.Member.id == member_id).first()
-    if not member:
-        raise HTTPException(status_code=404, detail="Member not found")
-    
-    # Soft delete
-    member.is_active = False
-    member.updated_at = datetime.utcnow()
-    db.commit()
-    return {"message": "Member removed successfully"}
-
-@app.post("/api/members/{member_id}/fetch")
-async def trigger_member_fetch(
-    member_id: int,
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
-):
-    member = db.query(models.Member).filter(models.Member.id == member_id, models.Member.is_active == True).first()
-    if not member:
-        raise HTTPException(status_code=404, detail="Member not found")
-
-    fetched = await gradio_fetcher.fetch_member_data(member.roll_no)
-    snapshot = await process_member_snapshot(db, member, fetched)
     return {
-        "status": snapshot.fetch_status,
-        "balance_points": snapshot.balance_points,
-        "total_marks": snapshot.total_marks,
-        "error_message": snapshot.error_message
+        "message": f"Member {name_deleted} ({roll_deleted}) and all stored data were deleted."
     }
 
-async def _fetch_single_member_task(member_id: int):
-    """Background helper to fetch single member without holding request open"""
-    await asyncio.sleep(0.5)
-    db = SessionLocal()
-    try:
-        member = db.query(models.Member).filter(models.Member.id == member_id).first()
-        if member and member.is_active:
-            fetched = await gradio_fetcher.fetch_member_data(member.roll_no)
-            await process_member_snapshot(db, member, fetched)
-    except Exception as e:
-        print(f"Error fetching member {member_id}: {e}")
-    finally:
-        db.close()
 
-
-# ----------------- Member Details & History -----------------
-@app.get("/api/members/{member_id}/history")
-def get_member_history(
-    member_id: int,
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
+@app.post("/api/team/members/{user_id}/reset-password")
+def reset_member_password(
+    user_id: int,
+    req: MemberPasswordResetRequest,
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
 ):
-    member = db.query(models.Member).filter(models.Member.id == member_id).first()
-    if not member:
-        raise HTTPException(status_code=404, detail="Member not found")
+    """
+    Captain resets a member's password and gets a temporary password to share.
+    """
+    captain, team = auth
+    target = db.query(models.User).filter(
+        models.User.id == user_id,
+        models.User.team_id == team.id
+    ).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Member not found in your team.")
 
-    # Latest snapshot
+    new_pwd = req.new_password.strip() if req.new_password and req.new_password.strip() else f"reset-{secrets.token_hex(2).upper()}"
+    target.password_hash = hash_password(new_pwd)
+    target.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "user_id": target.id,
+        "roll_no": target.roll_no,
+        "name": target.name,
+        "temp_password": new_pwd,
+        "message": f"Password reset for {target.name}. Share the temporary password."
+    }
+
+
+@app.get("/api/team/members/{user_id}/details")
+def get_member_full_details(
+    user_id: int,
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
+):
+    """
+    Captain views all details of a specific member in their team,
+    including the whole semester progression graph timeline.
+    """
+    captain, team = auth
+    user = db.query(models.User).filter(
+        models.User.id == user_id,
+        models.User.team_id == team.id
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Member not found in your team.")
+
+    return _build_user_details_response(db, user)
+
+
+@app.get("/api/team/changes")
+def get_team_changes(
+    limit: int = Query(50, ge=1, le=200),
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
+):
+    """Recent changes feed scoped strictly to the captain's team"""
+    captain, team = auth
+    changes = (
+        db.query(models.ChangeLog, models.User)
+        .join(models.User, models.ChangeLog.user_id == models.User.id)
+        .filter(models.ChangeLog.team_id == team.id)
+        .order_by(models.ChangeLog.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": log.id,
+            "user_id": user.id,
+            "member_name": user.name,
+            "roll_no": user.roll_no,
+            "field": log.field_name,
+            "old_value": log.old_value,
+            "new_value": log.new_value,
+            "description": log.description,
+            "timestamp": log.timestamp.isoformat()
+        }
+        for log, user in changes
+    ]
+
+
+@app.get("/api/team/export/csv")
+def export_team_csv(
+    auth = Depends(require_captain),
+    db: Session = Depends(get_db)
+):
+    """Captain exports team members and metrics as CSV"""
+    captain, team = auth
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Team ID",
+        "Team Name",
+        "Roll Number",
+        "Student Name",
+        "Role",
+        "Year",
+        "Department",
+        "Mentor Name",
+        "Balance Reward Points",
+        "Cumulative Points",
+        "Redeemed Points",
+        "Total Internal Marks",
+        "Total Subjects",
+        "Last Updated (UTC)",
+        "Fetch Status"
+    ])
+
+    users = db.query(models.User).filter(models.User.team_id == team.id).all()
+    for u in users:
+        snap = (
+            db.query(models.Snapshot)
+            .filter(models.Snapshot.user_id == u.id)
+            .order_by(models.Snapshot.timestamp.desc())
+            .first()
+        )
+        if snap:
+            writer.writerow([
+                team.team_id,
+                team.name,
+                u.roll_no,
+                u.name,
+                u.role,
+                snap.year or "",
+                snap.department or "",
+                snap.mentor_name or "",
+                f"{snap.balance_points:.2f}",
+                f"{snap.cumulative_points:.2f}",
+                f"{snap.redeemed_points:.2f}",
+                f"{snap.total_marks:.2f}",
+                snap.total_subjects,
+                snap.timestamp.strftime("%Y-%m-%d %H:%M:%S") if snap.timestamp else "",
+                snap.fetch_status
+            ])
+        else:
+            writer.writerow([
+                team.team_id,
+                team.name,
+                u.roll_no,
+                u.name,
+                u.role,
+                "", "", "", "0.00", "0.00", "0.00", "0.00", 0, "", "pending"
+            ])
+
+    output.seek(0)
+    filename = f"{team.team_id}_reward_tracker_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.post("/api/team/refresh")
+def refresh_team_now(auth = Depends(require_captain)):
+    """Captain initiates an immediate sync cycle for the team"""
+    scheduler.trigger_immediate_sync()
+    return {"status": "triggered", "message": "Manual sync initiated for your team."}
+
+
+# ----------------- Member & Shared Routes -----------------
+@app.get("/api/member/me")
+def get_member_self_details(
+    auth = Depends(require_member_or_captain),
+    db: Session = Depends(get_db)
+):
+    """
+    Member view: member can ONLY view their own full details,
+    points, marks, activities, and whole semester progression graph.
+    """
+    user, _ = auth
+    return _build_user_details_response(db, user)
+
+
+@app.get("/api/team/summary")
+def get_team_summary(
+    auth = Depends(require_member_or_captain),
+    db: Session = Depends(get_db)
+):
+    """
+    Shared view: returns aggregated team summary and top performers leaderboard
+    (name + points only, safe for members to see).
+    """
+    user, team = auth
+    users = db.query(models.User).filter(models.User.team_id == team.id).all()
+    total_members = len(users)
+
+    total_points = 0.0
+    total_marks = 0.0
+    latest_sync = None
+    leaderboard_raw = []
+
+    for u in users:
+        snap = (
+            db.query(models.Snapshot)
+            .filter(models.Snapshot.user_id == u.id)
+            .order_by(models.Snapshot.timestamp.desc())
+            .first()
+        )
+        pts = snap.balance_points if snap else 0.0
+        mks = snap.total_marks if snap else 0.0
+        if snap and snap.timestamp:
+            if not latest_sync or snap.timestamp > latest_sync:
+                latest_sync = snap.timestamp
+
+        total_points += pts
+        total_marks += mks
+
+        # Top performers list: name + points only (member cannot see other member's subjects/history)
+        leaderboard_raw.append({
+            "name": u.name,
+            "points": pts,
+            "is_current_user": (u.id == user.id)
+        })
+
+    # Sort leaderboard descending by points
+    leaderboard_raw.sort(key=lambda x: x["points"], reverse=True)
+    leaderboard = [
+        {
+            "rank": idx + 1,
+            "name": item["name"],
+            "points": item["points"],
+            "is_current_user": item["is_current_user"]
+        }
+        for idx, item in enumerate(leaderboard_raw)
+    ]
+
+    avg_points = (total_points / total_members) if total_members > 0 else 0.0
+    avg_marks = (total_marks / total_members) if total_members > 0 else 0.0
+
+    return {
+        "team_id": team.team_id,
+        "team_name": team.name,
+        "total_members": total_members,
+        "total_points": round(total_points, 2),
+        "avg_points": round(avg_points, 2),
+        "avg_marks": round(avg_marks, 2),
+        "last_sync": latest_sync.isoformat() if latest_sync else None,
+        "leaderboard": leaderboard
+    }
+
+
+@app.get("/api/sync/status")
+def get_sync_status(db: Session = Depends(get_db)):
+    status_row = db.query(models.SyncStatus).filter_by(id=1).first()
+    if not status_row:
+        return {
+            "status": "idle",
+            "last_sync_start": None,
+            "last_sync_finish": None,
+            "source_reachable": True,
+            "last_error": None
+        }
+    return {
+        "status": status_row.status,
+        "last_sync_start": status_row.last_sync_start.isoformat() if status_row.last_sync_start else None,
+        "last_sync_finish": status_row.last_sync_finish.isoformat() if status_row.last_sync_finish else None,
+        "source_reachable": status_row.source_reachable,
+        "last_error": status_row.last_error
+    }
+
+
+# ----------------- Live Server-Sent Events (SSE) -----------------
+@app.get("/api/events")
+async def events_endpoint(token: Optional[str] = Query(None)):
+    """
+    SSE stream yielding live update events strictly filtered to the user's team.
+    """
+    team_db_id = None
+    if token:
+        try:
+            from auth import decode_access_token
+            payload = decode_access_token(token)
+            team_db_id = payload.get("team_db_id")
+        except Exception:
+            team_db_id = None
+
+    queue = event_manager.subscribe(team_id=team_db_id)
+
+    async def event_generator():
+        yield f"event: connected\ndata: {json.dumps({'message': 'Connected to live stream', 'team_id': team_db_id})}\n\n"
+        try:
+            while True:
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield message
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            event_manager.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+# ----------------- Helper Functions -----------------
+def _build_user_details_response(db: Session, user: models.User) -> dict:
+    """Helper to assemble full member details with semester progression graph"""
     latest_snapshot = (
         db.query(models.Snapshot)
-        .filter(models.Snapshot.member_id == member.id)
+        .filter(models.Snapshot.user_id == user.id)
         .order_by(models.Snapshot.timestamp.desc())
         .first()
     )
 
-    # Historical snapshots for line chart (up to 50 most recent, chronologically ordered)
     history_snapshots = (
         db.query(models.Snapshot)
-        .filter(models.Snapshot.member_id == member.id)
+        .filter(models.Snapshot.user_id == user.id)
         .order_by(models.Snapshot.timestamp.asc())
         .limit(50)
         .all()
@@ -320,10 +762,9 @@ def get_member_history(
         for s in history_snapshots
     ]
 
-    # Full change log for this member
     change_logs = (
         db.query(models.ChangeLog)
-        .filter(models.ChangeLog.member_id == member.id)
+        .filter(models.ChangeLog.user_id == user.id)
         .order_by(models.ChangeLog.timestamp.desc())
         .all()
     )
@@ -369,8 +810,6 @@ def get_member_history(
             "subjects": subjects_list,
             "activities": activities_list,
             "breakdown": breakdown_dict,
-            "raw_student_text": latest_snapshot.raw_student_text,
-            "raw_subjects_text": latest_snapshot.raw_subjects_text,
             "fetch_status": latest_snapshot.fetch_status,
             "error_message": latest_snapshot.error_message,
             "last_updated": latest_snapshot.timestamp.isoformat()
@@ -379,11 +818,13 @@ def get_member_history(
     semester_progression = generate_semester_timeline(latest_snapshot)
 
     return {
-        "member": {
-            "id": member.id,
-            "name": member.name,
-            "roll_no": member.roll_no,
-            "is_active": member.is_active
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "roll_no": user.roll_no,
+            "role": user.role,
+            "team_id": user.team.team_id if user.team else "",
+            "team_name": user.team.name if user.team else ""
         },
         "current": current_data,
         "chart_data": chart_data,
@@ -392,205 +833,26 @@ def get_member_history(
     }
 
 
-# ----------------- Recent Changes Feed -----------------
-@app.get("/api/changes")
-def get_recent_changes(
-    limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
-):
-    changes = (
-        db.query(models.ChangeLog, models.Member)
-        .join(models.Member, models.ChangeLog.member_id == models.Member.id)
-        .order_by(models.ChangeLog.timestamp.desc())
-        .limit(limit)
-        .all()
-    )
-
-    return [
-        {
-            "id": log.id,
-            "member_id": member.id,
-            "member_name": member.name,
-            "roll_no": member.roll_no,
-            "field": log.field_name,
-            "old_value": log.old_value,
-            "new_value": log.new_value,
-            "description": log.description,
-            "timestamp": log.timestamp.isoformat()
-        }
-        for log, member in changes
-    ]
+async def _fetch_single_user_task(user_id: int):
+    """Background helper to fetch single user immediately without holding request open"""
+    await asyncio.sleep(0.5)
+    db = SessionLocal()
+    try:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if user:
+            fetched = await gradio_fetcher.fetch_member_data(user.roll_no)
+            await process_user_snapshot(db, user, fetched)
+    except Exception as e:
+        logger.error(f"Error fetching user {user_id}: {e}")
+    finally:
+        db.close()
 
 
-# ----------------- Sync & Scheduler Controls -----------------
-@app.post("/api/sync/refresh")
-def refresh_now(captain = Depends(get_current_captain)):
-    """Manual sync trigger for captain"""
-    scheduler.trigger_immediate_sync()
-    return {"status": "triggered", "message": "Manual sync initiated"}
-
-@app.get("/api/sync/status")
-def get_sync_status(db: Session = Depends(get_db)):
-    status_row = db.query(models.SyncStatus).filter_by(id=1).first()
-    if not status_row:
-        return {
-            "status": "idle",
-            "last_sync_start": None,
-            "last_sync_finish": None,
-            "source_reachable": True,
-            "last_error": None
-        }
-    return {
-        "status": status_row.status,
-        "last_sync_start": status_row.last_sync_start.isoformat() if status_row.last_sync_start else None,
-        "last_sync_finish": status_row.last_sync_finish.isoformat() if status_row.last_sync_finish else None,
-        "source_reachable": status_row.source_reachable,
-        "last_error": status_row.last_error
-    }
-
-
-# ----------------- Export CSV -----------------
-@app.get("/api/export/csv")
-def export_csv(
-    db: Session = Depends(get_db),
-    captain = Depends(get_current_captain)
-):
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Header row
-    writer.writerow([
-        "Roll Number",
-        "Student Name",
-        "Year",
-        "Department",
-        "Mentor Name",
-        "Balance Reward Points",
-        "Cumulative Points",
-        "Redeemed Points",
-        "Total Internal Marks",
-        "Total Subjects",
-        "Last Updated (UTC)",
-        "Fetch Status"
-    ])
-
-    members = db.query(models.Member).filter(models.Member.is_active == True).all()
-    for m in members:
-        snap = (
-            db.query(models.Snapshot)
-            .filter(models.Snapshot.member_id == m.id)
-            .order_by(models.Snapshot.timestamp.desc())
-            .first()
-        )
-        if snap:
-            writer.writerow([
-                m.roll_no,
-                m.name,
-                snap.year or "",
-                snap.department or "",
-                snap.mentor_name or "",
-                f"{snap.balance_points:.2f}",
-                f"{snap.cumulative_points:.2f}",
-                f"{snap.redeemed_points:.2f}",
-                f"{snap.total_marks:.2f}",
-                snap.total_subjects,
-                snap.timestamp.strftime("%Y-%m-%d %H:%M:%S") if snap.timestamp else "",
-                snap.fetch_status
-            ])
-        else:
-            writer.writerow([
-                m.roll_no,
-                m.name,
-                "", "", "", "0.00", "0.00", "0.00", "0.00", 0, "", "pending"
-            ])
-
-    output.seek(0)
-    filename = f"team_reward_tracker_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-    return Response(
-        content=output.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-# ----------------- Live Server-Sent Events (SSE) -----------------
-@app.get("/api/events")
-async def events_endpoint():
-    """
-    SSE stream yielding live update events for changed snapshots,
-    new alerts, and sync statuses.
-    """
-    queue = event_manager.subscribe()
-
-    async def event_generator():
-        # Send initial connected greeting
-        yield f"event: connected\ndata: {json.dumps({'message': 'Connected to live stream'})}\n\n"
-        try:
-            while True:
-                try:
-                    # Wait for next event or send heartbeat every 15 seconds
-                    message = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield message
-                except asyncio.TimeoutError:
-                    # Heartbeat comment to keep connection active
-                    yield ": ping\n\n"
-        except asyncio.CancelledError:
-            pass
-        finally:
-            event_manager.unsubscribe(queue)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
-    )
-
-
-# ----------------- Frontend SPA Catch-All -----------------
+# Catch-all route to serve React index.html for client-side routing
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    """
-    Serve static files or fall back to React SPA index.html for client-side routing.
-    Never intercept /api routes.
-    """
-    if full_path.startswith("api"):
-        raise HTTPException(status_code=404, detail="API route not found")
-
-    if STATIC_DIR and STATIC_DIR.exists():
-        # Check if requested path matches an existing static file (e.g. favicon.svg, vite.svg)
-        candidate = (STATIC_DIR / full_path).resolve()
-        try:
-            candidate.relative_to(STATIC_DIR.resolve())
-            if full_path and candidate.is_file():
-                return FileResponse(candidate)
-        except ValueError:
-            pass
-
-        # Fallback to index.html for SPA routes
-        index_file = STATIC_DIR / "index.html"
-        if index_file.is_file():
-            return FileResponse(index_file)
-
-    return Response(
-        content="""<!DOCTYPE html>
-<html>
-<head><title>Team Reward Tracker</title></head>
-<body style="font-family: sans-serif; text-align: center; padding: 50px;">
-  <h1>Team Reward Tracker</h1>
-  <p>Backend is running. Frontend static build was not found.</p>
-  <p>Run <code>npm run build</code> in the <code>frontend/</code> directory.</p>
-</body>
-</html>""",
-        media_type="text/html"
-    )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
-
+    if STATIC_DIR and (STATIC_DIR / full_path).is_file():
+        return FileResponse(STATIC_DIR / full_path)
+    if STATIC_DIR and (STATIC_DIR / "index.html").is_file():
+        return FileResponse(STATIC_DIR / "index.html")
+    return {"status": "ok", "app": "Team Reward Tracker API"}

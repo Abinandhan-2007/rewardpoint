@@ -1,6 +1,15 @@
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from config import DATABASE_URL
+from config import (
+    DATABASE_URL,
+    SEED_TEAM_NAME,
+    SEED_CAPTAIN_ROLL,
+    SEED_CAPTAIN_PASSWORD,
+    SEED_CAPTAIN_NAME
+)
+
+logger = logging.getLogger("database")
 
 engine = create_engine(
     DATABASE_URL,
@@ -10,9 +19,6 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-import logging
-logger = logging.getLogger("database")
-
 def get_db():
     db = SessionLocal()
     try:
@@ -20,53 +26,61 @@ def get_db():
     finally:
         db.close()
 
-def seed_default_members_if_empty(db):
+def seed_default_team_if_empty(db):
+    """
+    Optionally create first captain and team from env vars when database is empty.
+    """
     import models
-    import json
-    from config import INITIAL_MEMBERS
+    from auth import hash_password
 
-    count = db.query(models.Member).count()
-    if count > 0:
+    teams_count = db.query(models.Team).count()
+    if teams_count > 0:
         return
 
-    logger.info("Fresh database detected (disk wipe on restart). Seeding initial team members...")
-    members_to_seed = []
+    logger.info("Empty database detected. Seeding initial team and captain...")
+    
+    # 1. Create Default Seed Team
+    seed_team = models.Team(
+        team_id="TEAM-ALPHA",
+        name=SEED_TEAM_NAME or "Alpha Squad"
+    )
+    db.add(seed_team)
+    db.flush()
 
-    if INITIAL_MEMBERS:
-        try:
-            parsed = json.loads(INITIAL_MEMBERS)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    roll = item.get("roll_no") or item.get("roll")
-                    name = item.get("name")
-                    if roll and name:
-                        members_to_seed.append((str(roll).strip(), str(name).strip()))
-        except Exception:
-            for pair in INITIAL_MEMBERS.split(","):
-                if ":" in pair:
-                    roll, name = pair.split(":", 1)
-                    members_to_seed.append((roll.strip(), name.strip()))
-                elif pair.strip():
-                    members_to_seed.append((pair.strip(), pair.strip()))
+    # 2. Create Default Captain
+    captain = models.User(
+        team_id=seed_team.id,
+        name=SEED_CAPTAIN_NAME or "Monish JB",
+        roll_no=(SEED_CAPTAIN_ROLL or "7376241CS280").strip().upper(),
+        password_hash=hash_password(SEED_CAPTAIN_PASSWORD or "captain2026"),
+        role="captain"
+    )
+    db.add(captain)
 
-    if not members_to_seed:
-        members_to_seed = [
-            ("7376231CS101", "AAMINA A"),
-            ("7376241CS106", "ABINANDHAN K"),
-            ("7376231CS102", "AANANDHA KRISHNAN A P"),
-            ("7376241CS280", "monish jb"),
-            ("7376242IT306", "sivanagu e"),
-        ]
+    # 3. Seed Sample Team Members
+    sample_members = [
+        ("7376231CS101", "AAMINA A", "member123"),
+        ("7376241CS106", "ABINANDHAN K", "member123"),
+        ("7376242IT306", "sivanagu e", "member123"),
+    ]
 
-    for roll_no, name in members_to_seed:
-        db.add(models.Member(roll_no=roll_no, name=name, is_active=True))
+    for roll, name, pwd in sample_members:
+        member_user = models.User(
+            team_id=seed_team.id,
+            name=name,
+            roll_no=roll.strip().upper(),
+            password_hash=hash_password(pwd),
+            role="member"
+        )
+        db.add(member_user)
+
     db.commit()
-    logger.info(f"Seeded {len(members_to_seed)} initial team members.")
+    logger.info(f"Seeded initial team '{seed_team.name}' ({seed_team.team_id}) with captain {captain.roll_no} and {len(sample_members)} members.")
 
 def init_db():
     import models
     Base.metadata.create_all(bind=engine)
-    # Ensure a SyncStatus singleton row exists
+    
     db = SessionLocal()
     try:
         status_row = db.query(models.SyncStatus).filter_by(id=1).first()
@@ -80,8 +94,7 @@ def init_db():
             db.add(status_row)
             db.commit()
 
-        # Seed members if empty (handles wiped ephemeral disk on restart)
-        seed_default_members_if_empty(db)
+        # Seed initial team and users if empty
+        seed_default_team_if_empty(db)
     finally:
         db.close()
-

@@ -1,28 +1,37 @@
 import asyncio
 import json
 import logging
-from typing import Set
+from typing import Dict, Optional
 
 logger = logging.getLogger("events")
 
 class EventManager:
     def __init__(self):
-        self.subscribers: Set[asyncio.Queue] = set()
+        # Maps queue -> team_id (int) or None for global
+        self.subscribers: Dict[asyncio.Queue, Optional[int]] = {}
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, team_id: Optional[int] = None) -> asyncio.Queue:
         q = asyncio.Queue()
-        self.subscribers.add(q)
+        self.subscribers[q] = team_id
         return q
 
     def unsubscribe(self, q: asyncio.Queue):
-        self.subscribers.discard(q)
+        if q in self.subscribers:
+            del self.subscribers[q]
 
-    async def broadcast(self, event_type: str, data: dict):
+    async def broadcast(self, event_type: str, data: dict, team_id: Optional[int] = None):
+        """
+        Broadcast an event. If team_id is provided, only subscribers
+        belonging to that team_id will receive it.
+        """
         if not self.subscribers:
             return
         payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
         dead_queues = []
-        for q in self.subscribers:
+        for q, sub_team_id in list(self.subscribers.items()):
+            if team_id is not None and sub_team_id is not None and sub_team_id != team_id:
+                # Strictly isolate events: do not deliver other team's events
+                continue
             try:
                 q.put_nowait(payload)
             except Exception:

@@ -1,14 +1,14 @@
 const API_BASE = '/api';
 
 export function getAuthToken() {
-  return localStorage.getItem('captain_token');
+  return localStorage.getItem('reward_tracker_token');
 }
 
 export function setAuthToken(token) {
   if (token) {
-    localStorage.setItem('captain_token', token);
+    localStorage.setItem('reward_tracker_token', token);
   } else {
-    localStorage.removeItem('captain_token');
+    localStorage.removeItem('reward_tracker_token');
   }
 }
 
@@ -28,7 +28,7 @@ async function request(endpoint, options = {}) {
   if (response.status === 401) {
     setAuthToken(null);
     window.dispatchEvent(new CustomEvent('auth:unauthorized'));
-    throw new Error('Unauthorized');
+    throw new Error('Unauthorized or session expired. Please log in.');
   }
 
   if (!response.ok) {
@@ -49,45 +49,44 @@ async function request(endpoint, options = {}) {
 }
 
 export const api = {
-  // Auth
-  login: (password) => request('/auth/login', {
+  // ----------------- Auth -----------------
+  login: (team_id, roll_no, password) => request('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ team_id, roll_no, password }),
+  }),
+  signup: (captain_name, roll_no, password, team_name) => request('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({ captain_name, roll_no, password, team_name }),
   }),
   getMe: () => request('/auth/me'),
+  changePassword: (current_password, new_password) => request('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password, new_password }),
+  }),
 
-  // Members
-  getMembers: () => request('/members'),
-  addMember: (data) => request('/members', {
+  // ----------------- Captain API -----------------
+  getTeamMembers: () => request('/team/members'),
+  addTeamMember: (data) => request('/team/members', {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  updateMember: (id, data) => request(`/members/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify(data),
-  }),
-  deleteMember: (id) => request(`/members/${id}`, {
+  removeTeamMember: (userId) => request(`/team/members/${userId}`, {
     method: 'DELETE',
   }),
-  fetchSingleMember: (id) => request(`/members/${id}/fetch`, {
+  resetMemberPassword: (userId, new_password) => request(`/team/members/${userId}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ new_password }),
+  }),
+  getMemberFullDetails: (userId) => request(`/team/members/${userId}/details`),
+  getMemberHistory: (userId) => request(`/team/members/${userId}/details`),
+  fetchSingleMember: () => request('/team/refresh', { method: 'POST' }),
+  getTeamChanges: (limit = 50) => request(`/team/changes?limit=${limit}`),
+  refreshTeamNow: () => request('/team/refresh', {
     method: 'POST',
   }),
-  getMemberHistory: (id) => request(`/members/${id}/history`),
-
-  // Changes
-  getChanges: (limit = 50) => request(`/changes?limit=${limit}`),
-
-  // Sync
-  refreshNow: () => request('/sync/refresh', {
-    method: 'POST',
-  }),
-  getSyncStatus: () => request('/sync/status'),
-
-  // Export CSV
-  exportCsvUrl: () => `${API_BASE}/export/csv?token=${encodeURIComponent(getAuthToken() || '')}`,
-  downloadCsv: async () => {
+  downloadTeamCsv: async (teamId) => {
     const token = getAuthToken();
-    const res = await fetch(`${API_BASE}/export/csv`, {
+    const res = await fetch(`${API_BASE}/team/export/csv`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) throw new Error('Failed to export CSV');
@@ -95,9 +94,14 @@ export const api = {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `team_reward_tracker_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `${teamId || 'team'}_reward_tracker_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
   },
+
+  // ----------------- Member & Shared API -----------------
+  getMemberSelfDetails: () => request('/member/me'),
+  getTeamSummary: () => request('/team/summary'),
+  getSyncStatus: () => request('/sync/status'),
 };
