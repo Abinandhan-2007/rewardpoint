@@ -115,3 +115,8 @@ class SyncStatus(Base):
     status = Column(String(30), default="idle")  # "idle", "running", "success", "error"
     last_error = Column(Text, nullable=True)
     source_reachable = Column(Boolean, default=True)
+
+
+# Backwards compatibility alias
+Member = User
+

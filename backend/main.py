@@ -851,6 +851,8 @@ async def _fetch_single_user_task(user_id: int):
 # Catch-all route to serve React index.html for client-side routing
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
+    if full_path.startswith("api/") or full_path == "api":
+        raise HTTPException(status_code=404, detail="API endpoint not found")
     if STATIC_DIR and (STATIC_DIR / full_path).is_file():
         return FileResponse(STATIC_DIR / full_path)
     if STATIC_DIR and (STATIC_DIR / "index.html").is_file():

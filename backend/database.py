@@ -98,3 +98,7 @@ def init_db():
         seed_default_team_if_empty(db)
     finally:
         db.close()
+
+# Alias for backwards compatibility
+seed_default_members_if_empty = seed_default_team_if_empty
+

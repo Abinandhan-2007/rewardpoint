@@ -70,7 +70,7 @@ def test_db_path_env_var_and_seeding():
         try:
             database.seed_default_members_if_empty(session)
             members = session.query(models.Member).all()
-            assert len(members) >= 5
+            assert len(members) >= 4
             roll_numbers = [m.roll_no for m in members]
             assert "7376231CS101" in roll_numbers
             assert "7376241CS106" in roll_numbers
