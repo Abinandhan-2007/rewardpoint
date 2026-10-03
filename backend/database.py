@@ -12,10 +12,19 @@ from config import (
 
 logger = logging.getLogger("database")
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-)
+is_sqlite = "sqlite" in DATABASE_URL
+engine_kwargs = {
+    "connect_args": {"check_same_thread": False} if is_sqlite else {},
+    "pool_pre_ping": True,
+}
+if not is_sqlite:
+    engine_kwargs.update({
+        "pool_recycle": 300,
+        "pool_size": 10,
+        "max_overflow": 20
+    })
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

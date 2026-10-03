@@ -15,5 +15,5 @@ services:
         value: PraneshJs/RewardPointsSite
       - key: POLL_INTERVAL_MINUTES
         value: "5"
-      - key: DB_PATH
-        value: /app/backend/tracker.db
+      - key: DATABASE_URL
+        sync: false

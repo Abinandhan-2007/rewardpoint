@@ -64,12 +64,12 @@ git push origin main
 
    | Key | Example Value | Description |
    | :--- | :--- | :--- |
+   | `DATABASE_URL` | `postgresql://user:pass@ep-xyz.neon.tech/neondb?sslmode=require` | **Recommended**: Free PostgreSQL connection string (from Neon or Supabase) for **100% permanent data storage** |
    | `CAPTAIN_PASSWORD` | `captain2026` | Password required for captain login |
    | `SECRET_KEY` | `team-reward-tracker-super-secret-key-3.14` | Secret key used for JWT session tokens |
    | `GRADIO_SPACE` | `PraneshJs/RewardPointsSite` | *(Optional)* Upstream Gradio space name |
    | `POLL_INTERVAL_MINUTES` | `5` | *(Optional)* Background polling interval |
-   | `DB_PATH` | `/app/backend/tracker.db` | *(Optional)* Custom SQLite path |
-   | `INITIAL_MEMBERS` | `7376231CS101:AAMINA A, 7376241CS106:ABINANDHAN K` | *(Optional)* Custom team members to seed if disk is wiped |
+   | `INITIAL_MEMBERS` | `7376231CS101:AAMINA A, 7376241CS106:ABINANDHAN K` | *(Optional)* Custom team members to seed if database is empty |
 
    > **Note on Port**: Render automatically injects the `PORT` environment variable (typically `10000`). The Dockerfile dynamically binds Uvicorn to `0.0.0.0:${PORT:-8000}`, so no manual port configuration is needed.
 
