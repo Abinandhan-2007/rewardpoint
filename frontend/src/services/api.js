@@ -25,18 +25,22 @@ async function request(endpoint, options = {}) {
     headers,
   });
 
-  if (response.status === 401) {
-    setAuthToken(null);
-    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
-    throw new Error('Unauthorized or session expired. Please log in.');
-  }
-
   if (!response.ok) {
     let errorMsg = `Request failed (${response.status})`;
     try {
       const errData = await response.json();
       errorMsg = errData.detail || errorMsg;
     } catch (_) {}
+
+    if (response.status === 401) {
+      setAuthToken(null);
+      if (!endpoint.startsWith('/auth/')) {
+        window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+        if (!errorMsg || errorMsg.startsWith('Request failed')) {
+          errorMsg = 'Unauthorized or session expired. Please log in.';
+        }
+      }
+    }
     throw new Error(errorMsg);
   }
 
