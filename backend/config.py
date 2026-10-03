@@ -26,7 +26,12 @@ if DB_PATH:
     db_file.parent.mkdir(parents=True, exist_ok=True)
     DATABASE_URL = f"sqlite:///{db_file.as_posix()}"
 else:
-    DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR.as_posix()}/tracker.db")
+    raw_db = os.getenv("DATABASE_URL")
+    if raw_db and not raw_db.startswith("sqlite:///."):
+        DATABASE_URL = raw_db
+    else:
+        # Guarantee absolute path so running uvicorn from root or backend uses the exact same database file
+        DATABASE_URL = f"sqlite:///{(BASE_DIR / 'tracker.db').resolve().as_posix()}"
 
 # Seed Configuration for First Captain and Team (Disabled by default to keep DB clean)
 ENABLE_SEED = os.getenv("ENABLE_SEED", "false").lower() == "true"
